@@ -1,0 +1,24 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overscroll-behavior: none;
+  background: #000;
+}
+
+body {
+  /* Prevent iOS Safari's double-tap-to-zoom / pull-to-refresh from fighting
+     the capture UI. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}

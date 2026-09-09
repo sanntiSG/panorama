@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: panorama-server
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm run start -w server
+    healthCheckPath: /api/health
+    envVars:
+      # Lower default output resolution to fit the free tier's 0.1 CPU /
+      # 512MB — see server/src/stitch/pipeline.ts. Bump to 4096 (or unset)
+      # on a bigger plan.
+      - key: PANORAMA_OUTPUT_WIDTH
+        value: "2048"
+      # Set after the Netlify site exists, to the site's URL — restricts
+      # CORS to it. See server/src/index.ts.
+      - key: CLIENT_ORIGIN
+        sync: false

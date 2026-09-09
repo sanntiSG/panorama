@@ -1,0 +1,18 @@
+[build]
+  command = "npm run build -w client"
+  publish = "client/dist"
+
+[build.environment]
+  # Netlify's build image sets NODE_ENV=production by default, which makes
+  # npm skip devDependencies — but vite/typescript/tailwind (needed to build
+  # the client) live there. Force them to install anyway.
+  NPM_FLAGS = "--include=dev"
+
+# VITE_API_BASE (URL of the Render service) is set as a Netlify environment
+# variable in the site UI, not here — it isn't known until Render's first
+# deploy. See README "Despliegue".
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

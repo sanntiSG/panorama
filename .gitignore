@@ -1,0 +1,21 @@
+node_modules/
+dist/
+build/
+*.log
+*.tsbuildinfo
+.DS_Store
+
+# mkcert-generated certs
+certs/
+*.pem
+*.key
+*.crt
+
+# server output panoramas + sessions
+server/out/
+server/sessions/
+
+# test artifacts
+tools/synth-out/
+.vite/
+coverage/
