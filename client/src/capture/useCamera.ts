@@ -62,6 +62,10 @@ export function useCamera() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setStatus('error');
+      // Rethrow so callers (App's handleStart) can react synchronously —
+      // e.g. to make sure nothing else proceeds — instead of only reading
+      // `error`/`status` from this hook's next render.
+      throw err;
     }
   }, [acquireWakeLock]);
 

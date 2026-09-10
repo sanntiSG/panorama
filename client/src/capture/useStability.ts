@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { PermissionState } from './useOrientation.js';
+import type { PermissionResult, PermissionState } from './useOrientation.js';
 
 /**
  * Detects whether the phone is currently being held still, using
@@ -56,22 +56,27 @@ export function useStability() {
     return () => window.removeEventListener('devicemotion', handleMotion);
   }, []);
 
-  const requestPermission = useCallback(async (): Promise<boolean> => {
+  const requestPermission = useCallback(async (): Promise<PermissionResult> => {
+    if (typeof window.DeviceMotionEvent === 'undefined') {
+      setPermission('unsupported');
+      return { ok: false, reason: 'unsupported' };
+    }
     const DME = window.DeviceMotionEvent as unknown as {
       requestPermission?: () => Promise<'granted' | 'denied'>;
     };
-    if (typeof DME?.requestPermission === 'function') {
+    if (typeof DME.requestPermission === 'function') {
       try {
         const result = await DME.requestPermission();
-        setPermission(result === 'granted' ? 'granted' : 'denied');
-        return result === 'granted';
+        const ok = result === 'granted';
+        setPermission(ok ? 'granted' : 'denied');
+        return ok ? { ok: true } : { ok: false, reason: 'denied' };
       } catch {
         setPermission('denied');
-        return false;
+        return { ok: false, reason: 'gesture' };
       }
     }
     setPermission('unnecessary');
-    return true;
+    return { ok: true };
   }, []);
 
   return { permission, requestPermission, isStable, isStableRef, jerk };

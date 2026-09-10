@@ -10,6 +10,7 @@ import { computeRoll } from './capture/targeting.js';
 import { queueShot } from './storage/session.js';
 import { UploadQueue } from './net/uploader.js';
 import { createSession, startStitch, subscribeStitchEvents } from './net/api.js';
+import type { PermissionFailureReason } from './capture/useOrientation.js';
 import { SetupScreen } from './screens/SetupScreen.js';
 import { CaptureScreen } from './screens/CaptureScreen.js';
 import { ProcessingScreen } from './screens/ProcessingScreen.js';
@@ -19,6 +20,19 @@ type Phase = 'setup' | 'capturing' | 'finishing' | 'stitching' | 'result' | 'err
 
 /** Fractional overlap between adjacent shots the capture plan targets. See shared/plan/capturePlan.ts. */
 const OVERLAP = 0.35;
+
+function orientationErrorMessage(reason: PermissionFailureReason | undefined): string {
+  switch (reason) {
+    case 'denied':
+      return 'El permiso de orientación fue denegado. Actívalo en Ajustes → Safari (o Ajustes de esta web) → Movimiento y orientación, y recarga la página.';
+    case 'gesture':
+      return 'No se pudo pedir el permiso de orientación a tiempo. Vuelve a tocar "Comenzar".';
+    case 'unsupported':
+      return 'Este navegador no tiene sensor de orientación. Prueba el "modo simulador" para usar la app desde un ordenador.';
+    default:
+      return 'Se necesita acceso al sensor de orientación para guiar la captura.';
+  }
+}
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>('setup');
@@ -108,24 +122,43 @@ export default function App() {
     setErrorMsg(null);
     setStarting(true);
     try {
-      await camera.start();
+      if (!window.isSecureContext) {
+        setErrorMsg(
+          'Esta página no se sirve de forma segura (HTTPS) — la cámara y los sensores de movimiento no van a funcionar. Usa "npm run local" o "npm run dev" y abre la URL https:// que imprime.',
+        );
+        return;
+      }
+
       if (!simulatorMode) {
-        const okOrientation = await realOrientation.requestPermission();
-        if (!okOrientation) {
-          setErrorMsg('Se necesita acceso al sensor de orientación para guiar la captura.');
-          setStarting(false);
+        // Debe pedirse ANTES que camera.start(): en iOS, el prompt de
+        // getUserMedia espera a que el usuario toque "Permitir" en un
+        // diálogo del sistema, y para cuando esa promesa resuelve ya se
+        // perdió la "activación de usuario" que requestPermission()
+        // necesita — pedirlo después siempre fallaba, aunque el usuario
+        // nunca hubiera dicho que no. Motion se pide justo después, dentro
+        // del mismo gesto (no hace falta un segundo toque).
+        const orientationResult = await realOrientation.requestPermission();
+        if (!orientationResult.ok) {
+          setErrorMsg(orientationErrorMessage(orientationResult.reason));
           return;
         }
         // Best-effort: the stability gate degrades gracefully (locks purely
         // on angle/roll) if motion permission is denied.
         await stability.requestPermission();
       }
+
+      await camera.start();
+
       const session = await createSession(OVERLAP);
       setSessionId(session.id);
       const queue = new UploadQueue(session.id);
       queue.onPendingChange(setPendingUploads);
       uploadQueueRef.current = queue;
     } catch (err) {
+      // Apaga la cámara si algo falló a mitad de camino (p. ej. no se pudo
+      // crear la sesión) — si no, el stream sigue vivo y la luz de cámara
+      // se queda encendida aunque hayamos vuelto a la pantalla de setup.
+      camera.stop();
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
       setStarting(false);

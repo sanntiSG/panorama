@@ -1,7 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { headingFromQuat, orientationToQuat, reyawQuat, type Quat } from '@panorama/shared';
 
-export type PermissionState = 'unknown' | 'granted' | 'denied' | 'unnecessary';
+export type PermissionState = 'unknown' | 'granted' | 'denied' | 'unnecessary' | 'unsupported';
+
+/**
+ * Why a permission request failed, distinct enough to show an actionable
+ * message instead of a blanket "denied":
+ * - `denied`: the user was shown the native prompt and tapped "Don't Allow".
+ * - `gesture`: `requestPermission()` threw instead of resolving — on iOS
+ *   Safari this means it wasn't called synchronously enough from a user
+ *   gesture (typically because something else awaited first and consumed
+ *   the activation), not that the user said no.
+ * - `unsupported`: this browser has no orientation sensor API at all.
+ */
+export type PermissionFailureReason = 'denied' | 'gesture' | 'unsupported';
+
+export interface PermissionResult {
+  ok: boolean;
+  reason?: PermissionFailureReason;
+}
 
 export interface OrientationSample {
   quat: Quat;
@@ -95,23 +112,30 @@ export function useOrientation(options: UseOrientationOptions = {}) {
     return () => window.removeEventListener('deviceorientation', handleOrientation);
   }, []);
 
-  const requestPermission = useCallback(async (): Promise<boolean> => {
+  const requestPermission = useCallback(async (): Promise<PermissionResult> => {
+    if (typeof window.DeviceOrientationEvent === 'undefined') {
+      setPermission('unsupported');
+      return { ok: false, reason: 'unsupported' };
+    }
     const DOE = window.DeviceOrientationEvent as unknown as {
       requestPermission?: () => Promise<'granted' | 'denied'>;
     };
-    if (typeof DOE?.requestPermission === 'function') {
+    if (typeof DOE.requestPermission === 'function') {
       try {
         const result = await DOE.requestPermission();
-        setPermission(result === 'granted' ? 'granted' : 'denied');
-        return result === 'granted';
+        const ok = result === 'granted';
+        setPermission(ok ? 'granted' : 'denied');
+        return ok ? { ok: true } : { ok: false, reason: 'denied' };
       } catch {
+        // Thrown (rather than resolved 'denied') almost always means this
+        // wasn't called from a live user gesture — see PermissionFailureReason.
         setPermission('denied');
-        return false;
+        return { ok: false, reason: 'gesture' };
       }
     }
     // Android Chrome and older iOS don't gate this behind a permission prompt.
     setPermission('unnecessary');
-    return true;
+    return { ok: true };
   }, []);
 
   return { permission, requestPermission, sample, quatRef };
