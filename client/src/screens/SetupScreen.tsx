@@ -1,12 +1,15 @@
 export interface SetupScreenProps {
   onStart: () => void;
   starting: boolean;
+  /** Progress label shown on the button while `starting` (e.g. "Conectando
+   *  con el servidor…"); falls back to a generic label when null. */
+  startingLabel?: string | null;
   error: string | null;
   simulatorMode: boolean;
   onToggleSimulator: (value: boolean) => void;
 }
 
-export function SetupScreen({ onStart, starting, error, simulatorMode, onToggleSimulator }: SetupScreenProps) {
+export function SetupScreen({ onStart, starting, startingLabel, error, simulatorMode, onToggleSimulator }: SetupScreenProps) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-6 bg-neutral-950 px-6 text-center text-white">
       <h1 className="text-2xl font-semibold">Panorama 360°</h1>
@@ -31,7 +34,7 @@ export function SetupScreen({ onStart, starting, error, simulatorMode, onToggleS
         disabled={starting}
         className="rounded-full bg-white px-8 py-3 text-base font-medium text-black disabled:opacity-50"
       >
-        {starting ? 'Preparando…' : 'Comenzar'}
+        {starting ? (startingLabel ?? 'Preparando…') : 'Comenzar'}
       </button>
 
       {error && <p className="max-w-sm text-sm text-red-400">{error}</p>}

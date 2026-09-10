@@ -9,7 +9,7 @@ import { buildCameraModel, saveCalibratedFocal } from './capture/cameraCalibrati
 import { computeRoll } from './capture/targeting.js';
 import { queueShot } from './storage/session.js';
 import { UploadQueue } from './net/uploader.js';
-import { createSession, startStitch, subscribeStitchEvents } from './net/api.js';
+import { apiUrl, checkHealth, createSession, startStitch, subscribeStitchEvents } from './net/api.js';
 import type { PermissionFailureReason } from './capture/useOrientation.js';
 import { SetupScreen } from './screens/SetupScreen.js';
 import { CaptureScreen } from './screens/CaptureScreen.js';
@@ -39,6 +39,10 @@ export default function App() {
   const [simulatorMode, setSimulatorMode] = useState(false);
   const [showHud, setShowHud] = useState(true);
   const [starting, setStarting] = useState(false);
+  /** Shown on the "Comenzar" button while `starting` — e.g. "Conectando con
+   *  el servidor…" while a cold Render instance wakes up — instead of a
+   *  single generic label for the whole startup sequence. */
+  const [startingLabel, setStartingLabel] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const camera = useCamera();
@@ -130,6 +134,7 @@ export default function App() {
       }
 
       if (!simulatorMode) {
+        setStartingLabel('Pidiendo permisos…');
         // Debe pedirse ANTES que camera.start(): en iOS, el prompt de
         // getUserMedia espera a que el usuario toque "Permitir" en un
         // diálogo del sistema, y para cuando esa promesa resuelve ya se
@@ -147,8 +152,23 @@ export default function App() {
         await stability.requestPermission();
       }
 
+      // Comprobar el servidor ANTES de encender la cámara: si no responde,
+      // no tiene sentido pedir la cámara para luego fallar al crear la
+      // sesión con un error de red/CORS críptico. Un Render dormido tarda
+      // ~1 min en despertar tras la primera petición.
+      setStartingLabel('Conectando con el servidor…');
+      const serverUp = await checkHealth();
+      if (!serverUp) {
+        setErrorMsg(
+          `No se pudo conectar con el servidor (${apiUrl('') || 'mismo origen'}). Si usas el plan gratuito de Render, el servicio puede haberse dormido — espera ~1 minuto y vuelve a intentar. Si estás en local, comprueba que "npm run dev" o "npm run local" sigan corriendo.`,
+        );
+        return;
+      }
+
+      setStartingLabel('Abriendo la cámara…');
       await camera.start();
 
+      setStartingLabel('Creando sesión…');
       const session = await createSession(OVERLAP);
       setSessionId(session.id);
       const queue = new UploadQueue(session.id);
@@ -162,6 +182,7 @@ export default function App() {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
       setStarting(false);
+      setStartingLabel(null);
     }
   }
 
@@ -216,6 +237,7 @@ export default function App() {
       <SetupScreen
         onStart={handleStart}
         starting={starting}
+        startingLabel={startingLabel}
         error={errorMsg ?? camera.error}
         simulatorMode={simulatorMode}
         onToggleSimulator={setSimulatorMode}

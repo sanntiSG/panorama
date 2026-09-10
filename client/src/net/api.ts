@@ -12,6 +12,21 @@ export function apiUrl(path: string): string {
   return `${API_BASE}${path}`;
 }
 
+/**
+ * Cheap reachability probe against `/api/health`, run before touching the
+ * camera or creating a session — so a dead/cold/misconfigured backend shows
+ * up as a clear "no se pudo conectar" message instead of the camera turning
+ * on and then a cryptic CORS/network error once a shot tries to upload.
+ */
+export async function checkHealth(): Promise<boolean> {
+  try {
+    const res = await fetch(apiUrl('/api/health'));
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export interface CreateSessionResponse {
   id: string;
   nominalFocalPx: number | null;
