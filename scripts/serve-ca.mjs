@@ -11,21 +11,12 @@
  */
 import { createServer } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
-import { homedir, networkInterfaces } from 'node:os';
+import { homedir } from 'node:os';
 import path from 'node:path';
+import { lanIPv4s } from './lan.mjs';
 
 const PORT = 3002;
 const CA_PATH = path.join(homedir(), '.vite-plugin-mkcert', 'rootCA.pem');
-
-function lanIPv4s() {
-  const ips = [];
-  for (const iface of Object.values(networkInterfaces())) {
-    for (const addr of iface ?? []) {
-      if (addr.family === 'IPv4' && !addr.internal) ips.push(addr.address);
-    }
-  }
-  return ips;
-}
 
 if (!existsSync(CA_PATH)) {
   console.error(`No se encontró el CA de mkcert en ${CA_PATH}.`);

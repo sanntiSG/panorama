@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import mkcert from 'vite-plugin-mkcert';
-import { networkInterfaces } from 'node:os';
+import { lanIPv4s } from '../scripts/lan.mjs';
 
 // Dev server is served over HTTPS on the LAN so an iPhone on the same WiFi
 // can open it directly (Safari requires a secure context for getUserMedia
@@ -13,21 +13,11 @@ import { networkInterfaces } from 'node:os';
 // The cert's SAN list is built from whatever LAN IPv4 addresses this
 // machine currently has, rather than a hardcoded IP, so it keeps working
 // after switching WiFi networks or getting a new DHCP lease.
-function currentLanIPv4s(): string[] {
-  const ips: string[] = [];
-  for (const iface of Object.values(networkInterfaces())) {
-    for (const addr of iface ?? []) {
-      if (addr.family === 'IPv4' && !addr.internal) ips.push(addr.address);
-    }
-  }
-  return ips;
-}
-
 export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    mkcert({ hosts: ['localhost', '127.0.0.1', ...currentLanIPv4s()] }),
+    mkcert({ hosts: ['localhost', '127.0.0.1', ...lanIPv4s()] }),
   ],
   server: {
     host: '0.0.0.0',

@@ -11,8 +11,10 @@
     "server"
   ],
   "scripts": {
+    "dev": "node scripts/dev.mjs",
     "dev:client": "npm run dev -w client",
     "dev:server": "npm run dev -w server",
+    "local": "node scripts/local.mjs",
     "start": "npm run start -w server",
     "serve-ca": "node scripts/serve-ca.mjs",
     "build:shared": "npm run build -w shared",
