@@ -230,7 +230,7 @@ export default function App() {
     const roll = orientation.sample ? computeRoll(orientation.sample.quat) : 0;
     return (
       <CaptureScreen
-        videoRef={camera.videoRef}
+        videoRef={camera.attachVideo}
         plan={plan}
         camModel={camModel}
         quatRef={orientation.quatRef}

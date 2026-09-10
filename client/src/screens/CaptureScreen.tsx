@@ -5,13 +5,12 @@ import { DebugHud } from '../overlay/DebugHud.js';
 import type { OrientationSample } from '../capture/useOrientation.js';
 
 export interface CaptureScreenProps {
-  // Deliberately `RefObject<HTMLVideoElement>`, not `<HTMLVideoElement | null>`:
-  // TS's variance-shortcut check for same-named generics compares type
-  // arguments directly rather than the expanded structural type, so a
-  // redundant `| null` here (current: (HTMLVideoElement|null)|null) fails
-  // against JSX's `ref` target even though it's the same type after
-  // substitution. RefObject<T>.current is already `T | null`.
-  videoRef: RefObject<HTMLVideoElement>;
+  // A callback ref (from useCamera's `attachVideo`), not a plain
+  // `RefObject<HTMLVideoElement>`: the camera stream can start flowing
+  // before this screen (and its `<video>`) even mounts — see
+  // `useCamera.ts`'s `attachVideo` for why a plain ref object can't attach
+  // it once the element shows up, only a callback fired on mount can.
+  videoRef: (el: HTMLVideoElement | null) => void;
   plan: CapturePlan;
   camModel: CameraModel;
   quatRef: RefObject<Quat | null>;

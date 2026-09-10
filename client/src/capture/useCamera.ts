@@ -34,6 +34,40 @@ export function useCamera() {
     }
   }, []);
 
+  /**
+   * Callback ref for the `<video>` element — deliberately not just a plain
+   * object ref assigned via JSX `ref={videoRef}`. `start()` can resolve
+   * (and the stream start flowing) well before any `<video>` exists: it's
+   * called from the setup screen, which renders no `<video>` at all, and
+   * the capture screen mounts its *own* `<video>` only once the capture
+   * phase begins. A plain ref object has nothing to hook "a video element
+   * just appeared, attach the stream" onto; this callback fires exactly
+   * then, so pass it as the `ref` prop wherever the video element lives.
+   */
+  const attachVideo = useCallback((el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    if (!el) return;
+    if (streamRef.current) {
+      el.srcObject = streamRef.current;
+      void el.play().catch(() => {
+        // Autoplay can be blocked in rare cases; the element is
+        // muted+playsInline so this shouldn't normally happen.
+      });
+    }
+    // getSettings() below is the normal source of the camera's resolution;
+    // this is only a fallback for the rare case it doesn't report
+    // dimensions, so the app doesn't get stuck waiting on info.width > 0.
+    if (el.videoWidth > 0) {
+      setInfo((prev) => (prev && prev.width > 0 ? prev : { width: el.videoWidth, height: el.videoHeight }));
+    } else {
+      el.addEventListener(
+        'loadedmetadata',
+        () => setInfo((prev) => (prev && prev.width > 0 ? prev : { width: el.videoWidth, height: el.videoHeight })),
+        { once: true },
+      );
+    }
+  }, []);
+
   const start = useCallback(async () => {
     setStatus('requesting');
     setError(null);
@@ -72,6 +106,7 @@ export function useCamera() {
   const stop = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
     wakeLockRef.current?.release().catch(() => {});
     wakeLockRef.current = null;
     setStatus('idle');
@@ -90,5 +125,5 @@ export function useCamera() {
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [status, acquireWakeLock]);
 
-  return { videoRef, start, stop, status, error, info };
+  return { videoRef, attachVideo, start, stop, status, error, info };
 }
