@@ -19,26 +19,34 @@ describe('orientationToQuat physical sanity checks', () => {
     }
   });
 
-  it('vertical, screen facing the user (beta=90, gamma=0): lens heading tracks alpha', () => {
-    // At beta=90 the lens points horizontally; alpha=0 should be due north (+Y),
-    // alpha=90 should be due east (+X), matching compass semantics.
+  it('vertical, screen facing the user (beta=90, gamma=0): lens heading tracks -alpha', () => {
+    // At beta=90 the lens points horizontally; alpha=0 is due north (+Y)
+    // regardless of sign, but alpha=90 is due *west* (-X), not east —
+    // confirmed against a real device (see the file-header comment on
+    // deviceEulerToMat3 for the story: an earlier version of this test
+    // asserted east here, matching an alpha-chirality assumption that
+    // turned out backwards on real hardware).
     const north = forwardFor(0, 90, 0);
     expect(north.z).toBeCloseTo(0, 6);
     expect(north.y).toBeCloseTo(1, 6);
     expect(north.x).toBeCloseTo(0, 6);
 
-    const east = forwardFor(90, 90, 0);
-    expect(east.z).toBeCloseTo(0, 6);
-    expect(east.x).toBeCloseTo(1, 6);
-    expect(east.y).toBeCloseTo(0, 6);
+    const west = forwardFor(90, 90, 0);
+    expect(west.z).toBeCloseTo(0, 6);
+    expect(west.x).toBeCloseTo(-1, 6);
+    expect(west.y).toBeCloseTo(0, 6);
   });
 
-  it('headingFromQuat recovers alpha in the vertical (beta=90, gamma=0) pose', () => {
+  it('headingFromQuat recovers -alpha in the vertical (beta=90, gamma=0) pose', () => {
+    // See the file-header comment on deviceEulerToMat3: this exact relation
+    // (not just "roughly opposite") is what matches iOS Safari's
+    // long-documented compassHeading ≈ 360 - alpha behavior on real devices.
     for (const alphaDeg of [0, 30, 90, 145, 200, 300]) {
       const q = orientationToQuat({ alpha: alphaDeg, beta: 90, gamma: 0, screenAngle: 0 });
       const headingRad = headingFromQuat(q);
       const headingDeg = ((headingRad * 180) / Math.PI + 360) % 360;
-      expect(headingDeg).toBeCloseTo(alphaDeg, 3);
+      const expectedDeg = (360 - alphaDeg) % 360;
+      expect(headingDeg).toBeCloseTo(expectedDeg, 3);
     }
   });
 });

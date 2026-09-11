@@ -10,24 +10,32 @@
  * (X right, Y toward top edge, Z out of the screen face) into the Earth
  * frame (X east, Y true north, Z up); the two frames coincide exactly when
  * alpha=beta=gamma=0 (device lying flat, screen up, top edge pointing
- * north). One correction on top of that: alpha is a *compass bearing*
- * (increases clockwise from north), which is the opposite rotational sense
- * from a standard right-hand Rz(+angle) in an east/north/up frame (that
- * rotates east *toward* north, i.e. counter-clockwise viewed from above) —
- * so alpha's sign is flipped before building Rz.
+ * north). Rz(alpha) is applied with alpha's own sign, unmodified.
  *
- * Re-derived from the spec (rather than ported from a UI library) and
- * checked against physical poses before trusting it:
+ * An earlier version of this file *flipped* alpha's sign here, reasoning
+ * that a compass bearing (clockwise-increasing) is the opposite rotational
+ * sense from a standard right-hand Rz(+angle) (counter-clockwise-increasing,
+ * viewed from above, in an east/north/up frame). That reasoning was
+ * internally consistent and passed hand-picked pose checks, but was never
+ * tested against a real device — and turned out backwards: on a real
+ * iPhone, turning right (clockwise, compass heading increasing) painted the
+ * reticles/dial needle turning *left*. Removing the flip fixed it. This
+ * also matches the compass-heading-from-alpha relationship iOS Safari web
+ * developers have long empirically had to use
+ * (`compassHeading ≈ 360 − alpha`, i.e. heading ≈ −alpha): with the flip
+ * removed, `headingFromQuat(orientationToQuat({alpha, beta:90, gamma:0,
+ * screenAngle:0}))` works out to exactly `−alpha` (see orientation.test.ts)
+ * — matching that relationship precisely, not approximately.
+ *
+ * Physical poses this is checked against (see orientation.test.ts):
  *  - flat, screen up (beta=gamma=0): back camera must point straight down
  *    for every alpha (a flat phone's lens points at the floor no matter
- *    which way the top edge is aimed).
+ *    which way the top edge is aimed) — insensitive to alpha's sign, so
+ *    this one never distinguished the two versions.
  *  - vertical, screen facing the user (beta=90, gamma=0): back camera must
- *    point due north at alpha=0 and due east at alpha=90 (the pose used to
- *    shoot a panorama, where alpha *is* the compass heading).
- * All hold with this formula (the alpha=90 case is exactly what caught the
- * chirality bug above — see orientation.test.ts); they did not hold with
- * the more commonly quoted "-90° about X" quaternion-correction shortcut,
- * so this file does not use that shortcut.
+ *    point due north at alpha=0 (unaffected by the sign either way) and,
+ *    with the fix, due *west* at alpha=90 (not east, as the earlier,
+ *    unverified version claimed).
  *
  * Camera-local frame (see camera.ts): +X right, +Y up, forward -Z — which
  * is exactly the device's own frame with the sign of Z flipped (the rear
@@ -63,15 +71,12 @@ export interface DeviceOrientationSample {
  * relative to an arbitrary reference if not.
  */
 function deviceEulerToMat3(alphaRad: number, betaRad: number, gammaRad: number): Mat3 {
-  // Compass bearing increases *clockwise* from north (N=0, E=90), but a
-  // standard right-hand Rz(+angle) rotates East->North, i.e.
-  // *counter*-clockwise when viewed from above in our X=east/Y=north/Z=up
-  // frame. The two rotational senses are opposite, so alpha's sign must be
-  // flipped here to get true compass semantics — caught by
-  // orientation.test.ts (beta=90,gamma=0,alpha=90 must point due east; it
-  // pointed due west without this negation).
-  const cZ = Math.cos(-alphaRad),
-    sZ = Math.sin(-alphaRad);
+  // alpha used directly, no sign flip — see the file-header comment for why
+  // (a real-device chirality bug, not just a style choice): the previous
+  // version negated alpha here, which tested fine against hand-picked poses
+  // but turned real left/right phone rotation backwards on an actual iPhone.
+  const cZ = Math.cos(alphaRad),
+    sZ = Math.sin(alphaRad);
   const cX = Math.cos(betaRad),
     sX = Math.sin(betaRad);
   const cY = Math.cos(gammaRad),
@@ -137,8 +142,14 @@ export function reyawQuat(q: Quat, targetHeadingRad: number): Quat {
  * function never evaluates it.
  */
 export function applyYawOffset(q: Quat, offsetRad: number): Quat {
-  // Same compass-vs-math-rotation chirality flip as deviceEulerToMat3: a
-  // standard Rz(+angle) *decreases* compass heading, so negate here.
+  // Unrelated to alpha/deviceEulerToMat3 above — this is purely about the
+  // relationship between a world-Z axis-angle rotation and the heading
+  // headingFromQuat() extracts (atan2(east, north), clockwise-from-north):
+  // applying qFromAxisAngle(Z, +angle) this way (qMul(qDeltaZ, q)) rotates
+  // the *content* by +angle in a standard right-hand/counter-clockwise
+  // sense, which *decreases* a clockwise-measured heading by `angle` — so
+  // this negates `offsetRad` first. Verified directly in
+  // orientation.test.ts ("shifts heading by exactly the offset").
   const qDeltaZ = qFromAxisAngle({ x: 0, y: 0, z: 1 }, -offsetRad);
   return qNormalize(qMul(qDeltaZ, q));
 }
