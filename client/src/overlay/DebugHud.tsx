@@ -23,8 +23,11 @@ export function DebugHud({ sample, rollDeg, isStable, jerk, camWidth, camHeight,
 
   return (
     <div className="pointer-events-none absolute left-2 top-2 z-20 rounded-lg bg-black/70 px-3 py-2 font-mono text-[11px] leading-relaxed text-lime-300">
-      <div>alpha {sample?.raw.alpha.toFixed(1) ?? '—'}° beta {sample?.raw.beta.toFixed(1) ?? '—'}° gamma {sample?.raw.gamma.toFixed(1) ?? '—'}°</div>
+      <div>raw α {sample?.raw.alpha.toFixed(1) ?? '—'}° β {sample?.raw.beta.toFixed(1) ?? '—'}° γ {sample?.raw.gamma.toFixed(1) ?? '—'}°</div>
       <div>heading {headingDeg?.toFixed(1) ?? '—'}°</div>
+      <div>
+        sensor {sample ? sample.hz.toFixed(0) : '—'}Hz ω {sample ? sample.rateDegPerSec.toFixed(0) : '—'}°/s
+      </div>
       <div>roll {rollDeg.toFixed(1)}° {Math.abs(rollDeg) < 12 ? '' : '⚠ nivela el teléfono'}</div>
       <div>compass {sample?.compassLocked ? 'ok' : 'sin señal'}</div>
       <div>

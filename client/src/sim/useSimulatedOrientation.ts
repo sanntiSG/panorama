@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { quatLookingAt, type Quat } from '@panorama/shared';
-import type { OrientationSample } from '../capture/useOrientation.js';
+import type { OrientationSample, OrientationSource } from '../capture/useOrientation.js';
 
 /**
  * Desktop stand-in for useOrientation: drag the pointer to "rotate the
@@ -13,9 +13,10 @@ import type { OrientationSample } from '../capture/useOrientation.js';
 const DRAG_SENSITIVITY = 0.005; // radians per pixel
 const MAX_PITCH = (89 * Math.PI) / 180;
 
-export function useSimulatedOrientation(targetElement: HTMLElement | null) {
+export function useSimulatedOrientation(targetElement: HTMLElement | null): OrientationSource {
   const [sample, setSample] = useState<OrientationSample | null>(null);
   const quatRef = useRef<Quat | null>(null);
+  const lastInputAtRef = useRef(0);
   const yawRef = useRef(0);
   const pitchRef = useRef(0);
   const draggingRef = useRef<{ x: number; y: number } | null>(null);
@@ -23,10 +24,13 @@ export function useSimulatedOrientation(targetElement: HTMLElement | null) {
   const publish = useCallback(() => {
     const q = quatLookingAt(yawRef.current, pitchRef.current, 0);
     quatRef.current = q;
+    lastInputAtRef.current = performance.now();
     setSample({
       quat: q,
       raw: { alpha: (yawRef.current * 180) / Math.PI, beta: 90, gamma: 0 },
       compassLocked: false,
+      rateDegPerSec: 0,
+      hz: 0,
     });
   }, []);
 
@@ -75,8 +79,9 @@ export function useSimulatedOrientation(targetElement: HTMLElement | null) {
 
   return {
     permission: 'unnecessary' as const,
-    requestPermission: async () => true,
+    requestPermission: async () => ({ ok: true }),
     sample,
     quatRef,
+    lastInputAtRef,
   };
 }
