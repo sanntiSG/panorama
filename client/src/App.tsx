@@ -237,7 +237,13 @@ export default function App() {
     setPhase('finishing');
   }
 
-  function handleReset() {
+  // useCallback (not a plain function declaration) so this has a stable
+  // identity across App's frequent re-renders (useOrientation publishes a
+  // throttled sample ~10Hz) — it's passed to CalibrationScreen as onAbort,
+  // which now reads it through a ref rather than an effect dependency, but
+  // keeping this stable too is cheap defense-in-depth against the same
+  // class of bug turning up anywhere else this gets passed down.
+  const handleReset = useCallback(() => {
     uploadQueueRef.current?.dispose();
     uploadQueueRef.current = null;
     camera.stop();
@@ -251,7 +257,9 @@ export default function App() {
     setResult(null);
     setErrorMsg(null);
     setPhase('setup');
-  }
+  }, [camera.stop]);
+
+  const handleCalibrationComplete = useCallback(() => setPhase('capturing'), []);
 
   useEffect(() => () => uploadQueueRef.current?.dispose(), []);
 
@@ -275,7 +283,7 @@ export default function App() {
         quatRef={orientation.quatRef}
         lastInputAtRef={orientation.lastInputAtRef}
         simulatorMode={simulatorMode}
-        onComplete={() => setPhase('capturing')}
+        onComplete={handleCalibrationComplete}
         onAbort={handleReset}
       />
     );

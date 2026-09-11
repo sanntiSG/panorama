@@ -74,6 +74,17 @@ export function CalibrationScreen({ videoRef, quatRef, lastInputAtRef, simulator
   const coverage = useHeadingCoverage(quatRef, lastInputAtRef);
   const dialCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const completedRef = useRef(false);
+  // App re-renders ~10Hz while orientation is live (useOrientation's
+  // throttled sample publish), and App passes onComplete/onAbort as fresh
+  // inline closures every render — so their identity is not stable. Reading
+  // them through refs (updated every render, no effect dependency on the
+  // callbacks themselves) means the completion effect below only reacts to
+  // coverage.complete actually changing, not to App re-rendering for an
+  // unrelated reason.
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
+  const onAbortRef = useRef(onAbort);
+  onAbortRef.current = onAbort;
 
   useEffect(() => {
     const canvas = dialCanvasRef.current;
@@ -113,10 +124,16 @@ export function CalibrationScreen({ videoRef, quatRef, lastInputAtRef, simulator
     if (!coverage.complete || completedRef.current) return;
     completedRef.current = true;
     // Small pause so the user actually sees the dial close ("¡Listo!")
-    // instead of being teleported straight into the capture screen.
-    const t = setTimeout(onComplete, 700);
+    // instead of being teleported straight into the capture screen. Reads
+    // onCompleteRef.current (not the onComplete prop directly) so this
+    // timer isn't at the mercy of App's frequent re-renders — see the ref
+    // comment above; without it this effect re-ran (and cancelled the
+    // pending timeout via its cleanup) roughly every 100ms, and since
+    // completedRef.current was already true it never got rescheduled, so
+    // onComplete silently never fired at all.
+    const t = setTimeout(() => onCompleteRef.current(), 700);
     return () => clearTimeout(t);
-  }, [coverage.complete, onComplete]);
+  }, [coverage.complete]);
 
   const hint = coverage.nearPole
     ? 'Apunta hacia el horizonte, no al suelo ni al techo.'
@@ -153,7 +170,7 @@ export function CalibrationScreen({ videoRef, quatRef, lastInputAtRef, simulator
             <p className="max-w-xs text-sm text-red-400">
               No estamos recibiendo datos del sensor de movimiento. Comprueba que los permisos siguen concedidos.
             </p>
-            <button onClick={onAbort} className="rounded-full bg-white px-5 py-2 text-sm font-semibold text-black">
+            <button onClick={() => onAbortRef.current()} className="rounded-full bg-white px-5 py-2 text-sm font-semibold text-black">
               Volver a intentar
             </button>
           </div>
