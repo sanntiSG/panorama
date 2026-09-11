@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { cameraFov, generateCapturePlan, type CameraModel, type CapturePlan, type PlanTarget, type Quat, type StitchResult } from '@panorama/shared';
 import { useCamera } from './capture/useCamera.js';
 import { useOrientation, currentScreenAngle } from './capture/useOrientation.js';
@@ -48,7 +48,26 @@ export default function App() {
   const camera = useCamera();
   const realOrientation = useOrientation();
   const stability = useStability();
-  const simOrientation = useSimulatedOrientation(camera.videoRef.current);
+  // useSimulatedOrientation needs to know which <video> is currently live so
+  // it can (re)bind its drag listeners to it. camera.videoRef.current alone
+  // isn't enough: reading a plain ref during render doesn't make this
+  // component re-render when the ref's target changes, so it only ever
+  // reflects whichever element happened to be attached as of the last
+  // *unrelated* re-render. That was invisible with a single capture screen
+  // (handleStart's own state updates happened to re-render App after the
+  // <video> mounted), but breaks the moment a second screen with its own
+  // <video> (the calibration screen) swaps in — the sim's listeners would
+  // stay bound to the old, by-then-detached element. Mirroring the element
+  // into state makes the swap reactive.
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
+  const attachVideo = useCallback(
+    (el: HTMLVideoElement | null) => {
+      camera.attachVideo(el);
+      setVideoEl(el);
+    },
+    [camera.attachVideo],
+  );
+  const simOrientation = useSimulatedOrientation(videoEl);
   const orientation = simulatorMode ? simOrientation : realOrientation;
 
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -252,7 +271,7 @@ export default function App() {
     const roll = orientation.sample ? computeRoll(orientation.sample.quat) : 0;
     return (
       <CaptureScreen
-        videoRef={camera.attachVideo}
+        videoRef={attachVideo}
         plan={plan}
         camModel={camModel}
         quatRef={orientation.quatRef}

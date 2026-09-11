@@ -120,8 +120,25 @@ export function headingFromQuat(q: Quat): number {
 export function reyawQuat(q: Quat, targetHeadingRad: number): Quat {
   const current = headingFromQuat(q);
   const delta = targetHeadingRad - current;
+  return applyYawOffset(q, delta);
+}
+
+/**
+ * Rotates `q` by `offsetRad` of world-frame compass yaw (same clockwise-
+ * from-north sense as `headingFromQuat`), preserving pitch and roll — the
+ * building block `reyawQuat` is written in terms of, but usable directly
+ * when the caller already has the offset to apply (e.g. an accumulated
+ * compass-correction offset) instead of a target heading to reach.
+ *
+ * Numerically stable at *any* pitch, including looking straight up/down,
+ * unlike `reyawQuat(q, headingFromQuat(q) + offset)`: `headingFromQuat` is
+ * `atan2` of two components that both tend to zero near the poles, so a
+ * heading computed there (and then rotated back out again) is noise: this
+ * function never evaluates it.
+ */
+export function applyYawOffset(q: Quat, offsetRad: number): Quat {
   // Same compass-vs-math-rotation chirality flip as deviceEulerToMat3: a
-  // standard Rz(+angle) *decreases* compass heading, so negate delta here.
-  const qDeltaZ = qFromAxisAngle({ x: 0, y: 0, z: 1 }, -delta);
+  // standard Rz(+angle) *decreases* compass heading, so negate here.
+  const qDeltaZ = qFromAxisAngle({ x: 0, y: 0, z: 1 }, -offsetRad);
   return qNormalize(qMul(qDeltaZ, q));
 }
