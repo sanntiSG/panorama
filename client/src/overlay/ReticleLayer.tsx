@@ -1,31 +1,36 @@
 import { useEffect, useRef } from 'react';
-import { headingFromQuat, qRotateVec, suggestNextTarget, type CameraModel, type CapturePlan, type PlanTarget, type Quat } from '@panorama/shared';
+import type { CameraModel, CapturePlan, PlanTarget, Quat } from '@panorama/shared';
 import {
-  APPROACH_ANGULAR_THRESHOLD_RAD,
-  LOCK_ANGULAR_THRESHOLD_RAD,
   LOCK_ROLL_THRESHOLD_RAD,
+  SECONDARY_MAX_ANGLE_RAD,
   computeRoll,
+  pickPrimaryTarget,
   projectTargets,
+  screenDirectionTo,
   type ProjectedTarget,
 } from '../capture/targeting.js';
 import { applyCoverTransform, computeCoverTransform } from '../capture/viewport.js';
-
-function wrapPi(rad: number): number {
-  return Math.atan2(Math.sin(rad), Math.cos(rad));
-}
-
-function forwardOf(quat: Quat) {
-  return qRotateVec(quat, { x: 0, y: 0, z: -1 });
-}
+import {
+  drawCapturedDot,
+  drawCenterMark,
+  drawEdgeArrow,
+  drawLeaderLine,
+  drawPrimaryReticle,
+  drawRollIndicator,
+  drawSecondaryDot,
+  drawWorldGrid,
+} from './reticleDraw.js';
 
 const HOLD_MS = 250;
-const MAX_RETICLE_RADIUS = 46;
-const MIN_RETICLE_RADIUS = 20;
-const PENDING_DOT_RADIUS = 5;
+/** How long a lock-in-progress survives the gate (roll/stability/etc.) failing for a single frame before resetting — a lone dropped `isStable` sample shouldn't cost the whole 250ms hold. Firing itself still requires the gate to hold on the actual frame progress reaches 1 (see the `canLock` check below), so this only smooths out the *hold*, never the fire decision. */
+const LOCK_GRACE_MS = 120;
+/** Padding outside the visible frame within which a projected point still counts as "on screen" — matches the pinhole projection's own slight overshoot near the edges. */
+const OFFSCREEN_MARGIN_PX = 60;
 
 interface LockProgress {
   targetId: string;
   since: number;
+  lastGoodAt: number;
 }
 
 export interface ReticleLayerProps {
@@ -39,6 +44,10 @@ export interface ReticleLayerProps {
   suspended: boolean;
 }
 
+function isOnScreen(x: number, y: number, w: number, h: number): boolean {
+  return x >= -OFFSCREEN_MARGIN_PX && x <= w + OFFSCREEN_MARGIN_PX && y >= -OFFSCREEN_MARGIN_PX && y <= h + OFFSCREEN_MARGIN_PX;
+}
+
 export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onLockFire, suspended }: ReticleLayerProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const capturedIdsRef = useRef(capturedIds);
@@ -47,6 +56,7 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
   suspendedRef.current = suspended;
   const lockRef = useRef<LockProgress | null>(null);
   const firedCooldownRef = useRef<Set<string>>(new Set());
+  const primaryIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -73,6 +83,7 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
     resize();
     window.addEventListener('resize', resize);
 
+    /** The nearest *lockable* (state === 'locking', uncaptured) target, if any — distinct from `pickPrimaryTarget`'s hysteresis-smoothed pick because a real lock candidate must never be visually displaced by that hysteresis. */
     function pickCandidate(projected: ProjectedTarget[]): ProjectedTarget | null {
       let best: ProjectedTarget | null = null;
       for (const p of projected) {
@@ -98,67 +109,105 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
       const projected = projectTargets(plan, capturedIdsRef.current, quat, cam);
       const roll = computeRoll(quat);
       const rollOk = Math.abs(roll) < LOCK_ROLL_THRESHOLD_RAD;
-
-      // --- pending/approaching/captured reticles ---
-      let anyUncapturedOnScreen = false;
-      for (const p of projected) {
-        if (!p.visible) continue;
-        const { x, y } = applyCoverTransform(p.screen.x, p.screen.y, transform);
-        if (x < -60 || x > w + 60 || y < -60 || y > h + 60) continue;
-
-        if (p.state === 'captured') {
-          drawCaptured(ctx, x, y);
-        } else if (p.state === 'pending') {
-          drawPending(ctx, x, y);
-          anyUncapturedOnScreen = true;
-        } else if (p.state === 'approaching') {
-          const t = 1 - p.angularErrorRad / APPROACH_ANGULAR_THRESHOLD_RAD; // 0..1, 1 = closer
-          drawApproaching(ctx, x, y, t);
-          anyUncapturedOnScreen = true;
-        } else if (p.state === 'locking') {
-          anyUncapturedOnScreen = true;
-        }
-      }
-
-      // --- candidate lock/fire logic ---
-      const candidate = pickCandidate(projected);
-
-      // Nothing to aim at on screen at all: point toward the nearest
-      // uncaptured target with a simple "turn this way" chevron, so the
-      // user keeps sweeping in one consistent direction instead of
-      // searching blindly. Left/right is decided purely from the heading
-      // difference (ignoring pitch) — good enough since capture is
-      // fundamentally a yaw sweep at each ring.
-      if (!anyUncapturedOnScreen) {
-        const suggestion = suggestNextTarget(plan, capturedIdsRef.current, forwardOf(quat));
-        if (suggestion) {
-          const currentHeading = headingFromQuat(quat);
-          const delta = wrapPi(suggestion.yaw - currentHeading);
-          drawTurnHint(ctx, w, h, delta >= 0 ? 'right' : 'left');
-        }
-      }
       const now = performance.now();
       const stable = isStableRef.current ?? false;
 
-      if (candidate && rollOk && stable && !suspendedRef.current && !firedCooldownRef.current.has(candidate.target.id)) {
-        if (lockRef.current?.targetId !== candidate.target.id) {
-          lockRef.current = { targetId: candidate.target.id, since: now };
+      // --- world-fixed reference (bottom layer) ---
+      drawWorldGrid(ctx, w, h, quat, cam, transform);
+
+      // --- pick the one target to actively guide toward ---
+      const candidate = pickCandidate(projected);
+      const primary = candidate ?? pickPrimaryTarget(projected, primaryIdRef.current);
+      primaryIdRef.current = primary?.target.id ?? null;
+
+      // --- captured + secondary (non-primary) pending targets ---
+      for (const p of projected) {
+        if (p.state === 'captured') {
+          if (!p.visible) continue;
+          const { x, y } = applyCoverTransform(p.screen.x, p.screen.y, transform);
+          if (!isOnScreen(x, y, w, h)) continue;
+          drawCapturedDot(ctx, x, y);
+          continue;
+        }
+        if (primary && p.target.id === primary.target.id) continue;
+        if (!p.visible || p.angularErrorRad > SECONDARY_MAX_ANGLE_RAD) continue;
+        const { x, y } = applyCoverTransform(p.screen.x, p.screen.y, transform);
+        if (!isOnScreen(x, y, w, h)) continue;
+        drawSecondaryDot(ctx, x, y, p.angularErrorRad);
+      }
+
+      drawCenterMark(ctx, w, h);
+
+      // --- lock/fire timing + the primary reticle or edge arrow ---
+      if (primary) {
+        const gateOk = rollOk && stable;
+        const canLock =
+          primary.state === 'locking' && gateOk && !suspendedRef.current && !firedCooldownRef.current.has(primary.target.id);
+
+        if (canLock) {
+          if (lockRef.current?.targetId !== primary.target.id) {
+            lockRef.current = { targetId: primary.target.id, since: now, lastGoodAt: now };
+          } else {
+            lockRef.current.lastGoodAt = now;
+          }
+        } else if (lockRef.current?.targetId === primary.target.id) {
+          // Same target still, gate just failed this one frame — give it
+          // LOCK_GRACE_MS before actually resetting the hold.
+          if (now - lockRef.current.lastGoodAt > LOCK_GRACE_MS) {
+            lockRef.current = null;
+          }
+        } else {
+          lockRef.current = null;
+        }
+
+        const progress =
+          lockRef.current?.targetId === primary.target.id ? Math.min(1, (now - lockRef.current.since) / HOLD_MS) : 0;
+
+        let onScreen = false;
+        let sx = 0;
+        let sy = 0;
+        if (primary.visible) {
+          const pt = applyCoverTransform(primary.screen.x, primary.screen.y, transform);
+          if (isOnScreen(pt.x, pt.y, w, h)) {
+            onScreen = true;
+            sx = pt.x;
+            sy = pt.y;
+          }
+        }
+
+        if (onScreen) {
+          drawLeaderLine(ctx, w, h, sx, sy);
+          let gateHint: string | null = null;
+          if (primary.state === 'locking') {
+            if (!rollOk) gateHint = 'Nivela el teléfono';
+            else if (!stable) gateHint = 'Mantén quieto';
+          }
+          drawPrimaryReticle(ctx, sx, sy, {
+            angularErrorRad: primary.angularErrorRad,
+            locking: primary.state === 'locking',
+            progress,
+            gateHint,
+          });
+        } else {
+          // Falls back to "turn right" only in the vanishingly rare case the
+          // target sits exactly on the boresight's opposite point, where a
+          // screen direction is genuinely undefined — resolves itself the
+          // instant the user starts turning either way.
+          const dir = screenDirectionTo(primary.target.direction, quat) ?? { x: 1, y: 0 };
+          const pulse = (Math.sin(now / 280) + 1) / 2;
+          drawEdgeArrow(ctx, w, h, dir, { distanceDeg: (primary.angularErrorRad * 180) / Math.PI, pulse });
+        }
+
+        // Only ever fire on a frame where the gate is genuinely satisfied —
+        // the grace period above lets brief gate hiccups keep the hold's
+        // progress, but must never let a shot fire *during* one.
+        if (canLock && progress >= 1 && lockRef.current) {
+          firedCooldownRef.current.add(primary.target.id);
+          lockRef.current = null;
+          onLockFire(primary.target, quat);
         }
       } else {
         lockRef.current = null;
-      }
-
-      const progress = lockRef.current ? Math.min(1, (now - lockRef.current.since) / HOLD_MS) : 0;
-
-      if (candidate) {
-        const { x, y } = applyCoverTransform(candidate.screen.x, candidate.screen.y, transform);
-        drawLocking(ctx, x, y, progress, rollOk && stable);
-      }
-
-      if (progress >= 1 && candidate && lockRef.current) {
-        firedCooldownRef.current.add(candidate.target.id);
-        lockRef.current = null;
-        onLockFire(candidate.target, quat);
       }
 
       // --- roll (artificial horizon) indicator ---
@@ -180,96 +229,4 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
   // again in a future session — but never within this one, so we don't clear the cooldown set.
 
   return <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 z-10" />;
-}
-
-function drawPending(ctx: CanvasRenderingContext2D, x: number, y: number) {
-  ctx.beginPath();
-  ctx.arc(x, y, PENDING_DOT_RADIUS, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
-  ctx.fill();
-}
-
-function drawTurnHint(ctx: CanvasRenderingContext2D, w: number, h: number, direction: 'left' | 'right') {
-  const cy = h / 2;
-  const cx = direction === 'right' ? w - 50 : 50;
-  const sign = direction === 'right' ? 1 : -1;
-
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.beginPath();
-  ctx.moveTo(-14 * sign, -22);
-  ctx.lineTo(14 * sign, 0);
-  ctx.lineTo(-14 * sign, 22);
-  ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-  ctx.lineWidth = 5;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawApproaching(ctx: CanvasRenderingContext2D, x: number, y: number, t: number) {
-  const radius = MAX_RETICLE_RADIUS - (MAX_RETICLE_RADIUS - MIN_RETICLE_RADIUS) * Math.max(0, Math.min(1, t));
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, Math.PI * 2);
-  ctx.strokeStyle = '#f5a623';
-  ctx.lineWidth = 3;
-  ctx.stroke();
-}
-
-function drawLocking(ctx: CanvasRenderingContext2D, x: number, y: number, progress: number, ok: boolean) {
-  const radius = MIN_RETICLE_RADIUS;
-  ctx.beginPath();
-  ctx.arc(x, y, radius, 0, Math.PI * 2);
-  ctx.strokeStyle = ok ? 'rgba(48,209,88,0.9)' : 'rgba(48,209,88,0.4)';
-  ctx.lineWidth = 3;
-  ctx.stroke();
-
-  if (progress > 0) {
-    ctx.beginPath();
-    ctx.arc(x, y, radius + 6, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
-    ctx.strokeStyle = '#30d158';
-    ctx.lineWidth = 4;
-    ctx.stroke();
-  }
-}
-
-function drawCaptured(ctx: CanvasRenderingContext2D, x: number, y: number) {
-  ctx.beginPath();
-  ctx.arc(x, y, 14, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(48,209,88,0.85)';
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(x - 5, y);
-  ctx.lineTo(x - 1, y + 4);
-  ctx.lineTo(x + 6, y - 5);
-  ctx.strokeStyle = '#04210c';
-  ctx.lineWidth = 2.5;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.stroke();
-}
-
-function drawRollIndicator(ctx: CanvasRenderingContext2D, w: number, h: number, roll: number, ok: boolean) {
-  const cx = w / 2;
-  const cy = h - 90;
-  const len = 60;
-  ctx.save();
-  ctx.translate(cx, cy);
-  ctx.rotate(roll);
-  ctx.beginPath();
-  ctx.moveTo(-len, 0);
-  ctx.lineTo(len, 0);
-  ctx.strokeStyle = ok ? 'rgba(255,255,255,0.8)' : 'rgba(255,69,58,0.9)';
-  ctx.lineWidth = 3;
-  ctx.lineCap = 'round';
-  ctx.stroke();
-  ctx.restore();
-
-  ctx.beginPath();
-  ctx.moveTo(cx, cy - 10);
-  ctx.lineTo(cx, cy + 10);
-  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-  ctx.lineWidth = 2;
-  ctx.stroke();
 }
