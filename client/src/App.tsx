@@ -12,11 +12,12 @@ import { UploadQueue } from './net/uploader.js';
 import { apiUrl, checkHealth, createSession, startStitch, subscribeStitchEvents } from './net/api.js';
 import type { PermissionFailureReason } from './capture/useOrientation.js';
 import { SetupScreen } from './screens/SetupScreen.js';
+import { CalibrationScreen } from './screens/CalibrationScreen.js';
 import { CaptureScreen } from './screens/CaptureScreen.js';
 import { ProcessingScreen } from './screens/ProcessingScreen.js';
 import { ResultScreen } from './screens/ResultScreen.js';
 
-type Phase = 'setup' | 'capturing' | 'finishing' | 'stitching' | 'result' | 'error';
+type Phase = 'setup' | 'calibrating' | 'capturing' | 'finishing' | 'stitching' | 'result' | 'error';
 
 /** Fractional overlap between adjacent shots the capture plan targets. See shared/plan/capturePlan.ts. */
 const OVERLAP = 0.35;
@@ -82,18 +83,21 @@ export default function App() {
   /** Simulator mode has no real stability sensor — a stable `true` ref stands in for it (ReticleLayer reads `.current` each frame; a fresh literal every render would work by coincidence here, but a real ref is the correct pattern). */
   const alwaysStableRef = useRef(true);
 
-  // --- Setup -> capturing: once the camera reports its real resolution and
-  // a session exists, build the camera model (with any previously
-  // calibrated focal length) and generate the capture plan from it.
+  // --- Setup -> calibrating: once the camera reports its real resolution
+  // and a session exists, build the camera model (with any previously
+  // calibrated focal length) and generate the capture plan from it. Lands
+  // on the mandatory calibration screen, not straight into capturing —
+  // `phase === 'setup'` in the guard keeps this from ever re-firing once
+  // that's happened for this session.
   useEffect(() => {
-    if (camera.status === 'ready' && camera.info && camera.info.width > 0 && sessionId && !plan) {
+    if (phase === 'setup' && camera.status === 'ready' && camera.info && camera.info.width > 0 && sessionId && !plan) {
       const cam = buildCameraModel(camera.info.width, camera.info.height);
       const { hFov, vFov } = cameraFov(cam);
       setCamModel(cam);
       setPlan(generateCapturePlan(hFov, vFov, OVERLAP));
-      setPhase('capturing');
+      setPhase('calibrating');
     }
-  }, [camera.status, camera.info, sessionId, plan]);
+  }, [phase, camera.status, camera.info, sessionId, plan]);
 
   // --- capturing -> finishing, once every target has a shot.
   useEffect(() => {
@@ -260,6 +264,19 @@ export default function App() {
         error={errorMsg ?? camera.error}
         simulatorMode={simulatorMode}
         onToggleSimulator={setSimulatorMode}
+      />
+    );
+  }
+
+  if (phase === 'calibrating') {
+    return (
+      <CalibrationScreen
+        videoRef={attachVideo}
+        quatRef={orientation.quatRef}
+        lastInputAtRef={orientation.lastInputAtRef}
+        simulatorMode={simulatorMode}
+        onComplete={() => setPhase('capturing')}
+        onAbort={handleReset}
       />
     );
   }
