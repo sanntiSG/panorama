@@ -1,9 +1,11 @@
 import { useEffect, useRef } from 'react';
 import type { CameraModel, CapturePlan, PlanTarget, Quat } from '@panorama/shared';
 import {
+  LOCK_MAINTAIN_ANGULAR_THRESHOLD_RAD,
   LOCK_ROLL_THRESHOLD_RAD,
   SECONDARY_MAX_ANGLE_RAD,
   computeRoll,
+  describeDirection,
   pickPrimaryTarget,
   projectTargets,
   screenDirectionTo,
@@ -21,16 +23,21 @@ import {
   drawWorldGrid,
 } from './reticleDraw.js';
 
-const HOLD_MS = 250;
-/** How long a lock-in-progress survives the gate (roll/stability/etc.) failing for a single frame before resetting — a lone dropped `isStable` sample shouldn't cost the whole 250ms hold. Firing itself still requires the gate to hold on the actual frame progress reaches 1 (see the `canLock` check below), so this only smooths out the *hold*, never the fire decision. */
+/** Steady time (ms, only while `steady` — see below) required before a shot fires. Slightly up from the previous 250ms: now that progress only accumulates while genuinely still, a bit more of it is worth demanding. */
+const HOLD_MS = 300;
+/** How long a lock-in-progress survives the gate (roll/stability/etc.) failing for a single frame before resetting — a lone dropped `isStable` sample shouldn't cost the whole hold. Firing itself still requires the gate to hold on the actual frame progress reaches 1 (see the `canLock` check below), so this only smooths out the *hold*, never the fire decision. */
 const LOCK_GRACE_MS = 120;
 /** Padding outside the visible frame within which a projected point still counts as "on screen" — matches the pinhole projection's own slight overshoot near the edges. */
 const OFFSCREEN_MARGIN_PX = 60;
 
 interface LockProgress {
   targetId: string;
-  since: number;
+  /** Total ms accumulated so far — only ticks up while `steady` (see draw()); wobbling between the maintain and acquire thresholds pauses this instead of resetting it. */
+  accumulatedMs: number;
+  /** Wall-clock time of the last frame the gate (roll/stability/etc., not aim precision) held — drives LOCK_GRACE_MS. */
   lastGoodAt: number;
+  /** Wall-clock time this target's progress was last updated — the basis for how much to add to accumulatedMs next frame. */
+  lastTickAt: number;
 }
 
 export interface ReticleLayerProps {
@@ -143,25 +150,39 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
         const gateOk = rollOk && stable;
         const canLock =
           primary.state === 'locking' && gateOk && !suspendedRef.current && !firedCooldownRef.current.has(primary.target.id);
+        // Tighter than "locking" (LOCK_ANGULAR_THRESHOLD_RAD, 6°) — the hold
+        // only actually accumulates time while the aim is this precise, so
+        // the pose recorded when it fires is trustworthy, not just "was
+        // somewhere in the 6° cone at some point during the hold".
+        const steady = primary.angularErrorRad <= LOCK_MAINTAIN_ANGULAR_THRESHOLD_RAD;
 
         if (canLock) {
           if (lockRef.current?.targetId !== primary.target.id) {
-            lockRef.current = { targetId: primary.target.id, since: now, lastGoodAt: now };
+            lockRef.current = { targetId: primary.target.id, accumulatedMs: 0, lastGoodAt: now, lastTickAt: now };
           } else {
-            lockRef.current.lastGoodAt = now;
+            const lp = lockRef.current;
+            lp.lastGoodAt = now;
+            // Only add elapsed time while genuinely steady — wobbling
+            // between the maintain and acquire thresholds pauses the hold
+            // (lastTickAt still advances, so that gap isn't retroactively
+            // counted once it steadies again) instead of resetting it.
+            if (steady) lp.accumulatedMs += now - lp.lastTickAt;
+            lp.lastTickAt = now;
           }
         } else if (lockRef.current?.targetId === primary.target.id) {
           // Same target still, gate just failed this one frame — give it
           // LOCK_GRACE_MS before actually resetting the hold.
           if (now - lockRef.current.lastGoodAt > LOCK_GRACE_MS) {
             lockRef.current = null;
+          } else {
+            lockRef.current.lastTickAt = now;
           }
         } else {
           lockRef.current = null;
         }
 
         const progress =
-          lockRef.current?.targetId === primary.target.id ? Math.min(1, (now - lockRef.current.since) / HOLD_MS) : 0;
+          lockRef.current?.targetId === primary.target.id ? Math.min(1, lockRef.current.accumulatedMs / HOLD_MS) : 0;
 
         let onScreen = false;
         let sx = 0;
@@ -181,6 +202,7 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
           if (primary.state === 'locking') {
             if (!rollOk) gateHint = 'Nivela el teléfono';
             else if (!stable) gateHint = 'Mantén quieto';
+            else if (!steady) gateHint = 'Sigue quieto…';
           }
           drawPrimaryReticle(ctx, sx, sy, {
             angularErrorRad: primary.angularErrorRad,
@@ -195,13 +217,18 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
           // instant the user starts turning either way.
           const dir = screenDirectionTo(primary.target.direction, quat) ?? { x: 1, y: 0 };
           const pulse = (Math.sin(now / 280) + 1) / 2;
-          drawEdgeArrow(ctx, w, h, dir, { distanceDeg: (primary.angularErrorRad * 180) / Math.PI, pulse });
+          drawEdgeArrow(ctx, w, h, dir, {
+            distanceDeg: (primary.angularErrorRad * 180) / Math.PI,
+            pulse,
+            label: describeDirection(dir),
+          });
         }
 
-        // Only ever fire on a frame where the gate is genuinely satisfied —
-        // the grace period above lets brief gate hiccups keep the hold's
-        // progress, but must never let a shot fire *during* one.
-        if (canLock && progress >= 1 && lockRef.current) {
+        // Only ever fire on a frame where the gate is genuinely satisfied
+        // *and* the aim is currently steady — the grace period above lets
+        // brief gate hiccups keep the hold's progress, but must never let a
+        // shot fire while the aim itself is off, even briefly.
+        if (canLock && steady && progress >= 1 && lockRef.current) {
           firedCooldownRef.current.add(primary.target.id);
           lockRef.current = null;
           onLockFire(primary.target, quat);

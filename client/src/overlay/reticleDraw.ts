@@ -250,6 +250,8 @@ export interface EdgeArrowOptions {
   distanceDeg: number;
   /** 0..1, caller-driven pulse phase (e.g. from `(sin(now/280)+1)/2`) — a static arrow is easy to miss in a busy scene. */
   pulse: number;
+  /** Plain-language version of the same direction (see targeting.ts's describeDirection) — "Gira a la derecha" reads far faster than an arrow + a angle, especially the first few times. */
+  label: string;
 }
 
 const EDGE_MARGIN_PX = 46;
@@ -262,7 +264,7 @@ export function drawEdgeArrow(
   dir: { x: number; y: number },
   opts: EdgeArrowOptions,
 ) {
-  const { distanceDeg, pulse } = opts;
+  const { distanceDeg, pulse, label: directionLabel } = opts;
   const cx = w / 2;
   const cy = h / 2;
   const halfW = Math.max(1, w / 2 - EDGE_MARGIN_PX);
@@ -291,11 +293,14 @@ export function drawEdgeArrow(
   ctx.fill();
   ctx.restore();
 
-  const labelOffset = 30;
-  label(ctx, `Gira ${Math.round(distanceDeg)}°`, px - dir.x * labelOffset, py - dir.y * labelOffset, {
-    size: 12,
-    color: 'rgba(255,255,255,0.9)',
-  });
+  // Plain-language direction as the primary line (bigger, easier to read at
+  // a glance) with the precise degrees as a smaller secondary line — the
+  // words matter more for "which way do I turn", the number for "how far".
+  const labelOffset = 34;
+  const lx = px - dir.x * labelOffset;
+  const ly = py - dir.y * labelOffset;
+  label(ctx, directionLabel, lx, ly - 8, { size: 13, color: 'rgba(255,255,255,0.95)' });
+  label(ctx, `${Math.round(distanceDeg)}°`, lx, ly + 10, { size: 11, color: 'rgba(255,255,255,0.7)' });
 }
 
 const LEADER_MIN_DIST_PX = 90;

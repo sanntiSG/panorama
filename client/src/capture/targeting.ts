@@ -31,6 +31,20 @@ export interface ProjectedTarget {
  * demand of a handheld aim.
  */
 export const LOCK_ANGULAR_THRESHOLD_RAD = (6 * Math.PI) / 180;
+/**
+ * Tighter threshold the *hold* must additionally satisfy for its elapsed
+ * time to actually accumulate — separate from `LOCK_ANGULAR_THRESHOLD_RAD`
+ * above, which only gates the ring turning green and starting to count.
+ * Staying merely inside the acquire cone (a handheld aim can wander the
+ * full 6° while still technically "locking") isn't good enough for the
+ * pose actually recorded at fire time to be trustworthy — real capture
+ * sessions showed shots taken mid-wobble landing near that 6° edge,
+ * producing ghosting in the stitched panorama. While the error is between
+ * this and the acquire threshold, hold progress pauses (doesn't reset,
+ * doesn't advance) until the aim genuinely settles — see ReticleLayer's
+ * `steady` check.
+ */
+export const LOCK_MAINTAIN_ANGULAR_THRESHOLD_RAD = (3 * Math.PI) / 180;
 /** Roll beyond which we refuse to lock even if pointing is perfect — a rolled shot loses real coverage. */
 export const LOCK_ROLL_THRESHOLD_RAD = (12 * Math.PI) / 180;
 /** Below this angular error the reticle starts shrinking/turning amber ("getting warmer"). */
@@ -141,6 +155,24 @@ export function screenDirectionTo(worldDir: Vec3, quat: Quat): { x: number; y: n
   const len = Math.hypot(camDir.x, camDir.y);
   if (len < 1e-6) return null;
   return { x: camDir.x / len, y: -camDir.y / len };
+}
+
+/**
+ * Plain-language version of a `screenDirectionTo` result — "which way do I
+ * physically turn the phone" is a much easier question to answer from words
+ * than from an arrow + a angle, especially the first few times. `dir` is in
+ * the same screen axes as `screenDirectionTo` (+x right, +y down), so this
+ * needs no sign translation: the direction the target appears in on screen
+ * *is* the direction to turn the phone to bring it to center.
+ */
+export function describeDirection(dir: { x: number; y: number }): string {
+  const absX = Math.abs(dir.x);
+  const absY = Math.abs(dir.y);
+  const horiz = dir.x > 0 ? 'a la derecha' : 'a la izquierda';
+  const vert = dir.y > 0 ? 'hacia abajo' : 'hacia arriba';
+  if (absX > absY * 1.8) return `Gira ${horiz}`;
+  if (absY > absX * 1.8) return `Apunta ${vert}`;
+  return `Gira ${horiz} y ${vert}`;
 }
 
 /**

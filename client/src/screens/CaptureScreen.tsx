@@ -2,6 +2,7 @@ import type { RefObject } from 'react';
 import type { CameraModel, CapturePlan, PlanTarget, Quat } from '@panorama/shared';
 import { ReticleLayer } from '../overlay/ReticleLayer.js';
 import { DebugHud } from '../overlay/DebugHud.js';
+import { CoverageMap } from '../overlay/CoverageMap.js';
 import type { OrientationSample } from '../capture/useOrientation.js';
 
 export interface CaptureScreenProps {
@@ -79,6 +80,8 @@ export function CaptureScreen({
         {done}/{total}
         {pendingUploads > 0 && <span className="ml-2 text-xs text-neutral-400">↑{pendingUploads}</span>}
       </div>
+
+      <CoverageMap plan={plan} capturedIds={capturedIds} quatRef={quatRef} />
 
       {simulatorMode && (
         <div className="pointer-events-none absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 rounded bg-black/50 px-3 py-1 text-xs text-white">
