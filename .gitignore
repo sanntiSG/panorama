@@ -19,3 +19,6 @@ server/sessions/
 tools/synth-out/
 .vite/
 coverage/
+
+# personal test captures (real-device session outputs, not project artifacts)
+results/

@@ -11,6 +11,7 @@
  */
 import sharp from 'sharp';
 import {
+  angularSeparation,
   cameraFov,
   focalFromFov,
   generateCapturePlan,
@@ -27,6 +28,12 @@ import {
   type ShotMeta,
   type StitchProgressEvent,
 } from '@panorama/shared';
+// Reaching into server/'s source directly (not through its package entry —
+// it doesn't have one) rather than reimplementing "which shots overlap":
+// this is *exactly* the adjacency the real pipeline uses to decide which
+// pairs must agree on their relative pose, which is what the relative-error
+// metric below needs to mean the same thing "ghosting" does.
+import { findCandidatePairs } from '../server/src/stitch/pairs.js';
 
 const SERVER_URL = process.env.SERVER_URL ?? 'http://localhost:3001';
 const SHOT_SIZE = 480;
@@ -34,6 +41,20 @@ const HFOV_DEG = 55;
 const VFOV_DEG = 70;
 const OVERLAP = 0.25; // kept in sync with client/src/App.tsx's OVERLAP
 const GYRO_NOISE_DEG = process.env.GYRO_NOISE_DEG ? Number(process.env.GYRO_NOISE_DEG) : 2.5; // per the plan's own estimate of realistic gyro error
+// Adds a lattice of identical-looking features (same color/amplitude, 3°
+// apart in pitch, near the zenith) on top of the normal random scene —
+// mimics a real repetitive surface (parallel ceiling beams) that phase
+// correlation can genuinely confuse one repeat-period off. Default off so
+// the baseline scene stays a stable point of comparison across runs.
+const SYNTH_PERIODIC = process.env.SYNTH_PERIODIC === '1';
+// Injects a *large* extra gyro error (SYNTH_OUTLIER_DEG, default 12° — well
+// beyond what a ~30° alignment patch can correlate) into SYNTH_OUTLIER_SHOTS
+// deterministically-chosen targets, instead of the normal GYRO_NOISE_DEG.
+// A direct, reproducible stand-in for a shot fired while the aim was still
+// moving: it should fail to get a confident pairwise correction and (once
+// the render trust-weighting lands) render faintly instead of ghosting.
+const SYNTH_OUTLIER_SHOTS = process.env.SYNTH_OUTLIER_SHOTS ? Number(process.env.SYNTH_OUTLIER_SHOTS) : 0;
+const SYNTH_OUTLIER_DEG = process.env.SYNTH_OUTLIER_DEG ? Number(process.env.SYNTH_OUTLIER_DEG) : 12;
 
 function mulberry32(seed: number) {
   let a = seed;
@@ -64,6 +85,99 @@ function buildScene(rand: () => number, count: number): ScenePoint[] {
     });
   }
   return points;
+}
+
+/** SYNTH_PERIODIC=1's repetitive "ceiling plank" band: the same feature repeated every 3° of pitch, near the zenith. */
+function addPeriodicBand(points: ScenePoint[]): void {
+  const STEP_DEG = 3;
+  const HALF_SPAN_DEG = 25;
+  const PLANK_COLOR: [number, number, number] = [180, 150, 90];
+  for (let yawDeg = 0; yawDeg < 360; yawDeg += 20) {
+    for (let pitchDeg = 90 - HALF_SPAN_DEG; pitchDeg <= 90; pitchDeg += STEP_DEG) {
+      const yaw = (yawDeg * Math.PI) / 180;
+      const pitch = (pitchDeg * Math.PI) / 180;
+      const cp = Math.cos(pitch);
+      points.push({
+        dir: { x: cp * Math.sin(yaw), y: cp * Math.cos(yaw), z: Math.sin(pitch) },
+        color: PLANK_COLOR,
+      });
+    }
+  }
+}
+
+const CAM_FORWARD_LOCAL = { x: 0, y: 0, z: -1 };
+
+/**
+ * Gauge-free accuracy metric: bundle adjustment has no absolute reference
+ * (a weak prior only, see bundle.ts's PRIOR_WEIGHT), so comparing each
+ * shot's final pose to its own ground truth isn't meaningful run to run —
+ * but "how much do two *overlapping* shots disagree about their relative
+ * pose" is exactly what actually causes ghosting, and is invariant to any
+ * whole-scene rotation the solver settled on. `meanResidualPx` (from the
+ * stitch result) is *not* a substitute for this: it's computed only over
+ * pairs the bundle adjuster accepted, so anything that makes the pipeline
+ * more selective (e.g. periodicity-aware confidence) lowers it mechanically
+ * even when accuracy genuinely improves — never use it to judge that.
+ *
+ * Compares *pointing direction* only (where trueRel/gotRel send the camera
+ * forward axis), not the full 3-DOF relative rotation — deliberately
+ * ignoring the roll component. Two independent bugs would otherwise
+ * contaminate this: align.ts itself documents that a single pair's
+ * measurement can't resolve roll (near-boresight rotation) at all, so
+ * that's not what bundle adjustment is even trying to get right pairwise;
+ * and more concretely, `quatLookingAt`'s "roll=0" convention is
+ * *discontinuous* exactly at the poles — zenith/nadir fall back to an
+ * arbitrary fixed "right" vector (their forward is exactly parallel to
+ * world-up, so `cross(forward, worldUp)` is exactly zero) while every
+ * nearby ring target uses a smooth, yaw-dependent formula — so a pole
+ * target and its ring neighbor have *unrelated* roll references in this
+ * synthetic ground truth despite genuinely overlapping and aligning fine
+ * (confirmed directly: this alone produced a spurious ~99° "error" against
+ * an otherwise-correct reconstruction before this function excluded roll).
+ * Forward-direction agreement is also the more honest proxy for ghosting
+ * risk anyway — content position mismatch is what visibly doubles objects;
+ * a pure roll disagreement alone would read as a milder rotated seam.
+ */
+function relativeError(
+  plan: CapturePlan,
+  trueQuats: Map<string, Quat>,
+  finalQuats: Map<string, Quat>,
+  hFov: number,
+  vFov: number,
+): { meanDeg: number; maxDeg: number; worstPair: [string, string] | null; pairCount: number } {
+  const shotsForPairs = plan.targets
+    .filter((t) => trueQuats.has(t.id))
+    .map((t) => ({ targetId: t.id, quat: trueQuats.get(t.id)!, screenAngle: 0, capturedAt: 0, cam: { width: 1, height: 1, focalPx: 1 }, fileName: '' }));
+  const pairs = findCandidatePairs(shotsForPairs, hFov, vFov);
+
+  let sumSq = 0;
+  let maxErr = 0;
+  let worstPair: [string, string] | null = null;
+  let n = 0;
+  for (const { a, b } of pairs) {
+    const trueA = trueQuats.get(a);
+    const trueB = trueQuats.get(b);
+    const gotA = finalQuats.get(a);
+    const gotB = finalQuats.get(b);
+    if (!trueA || !trueB || !gotA || !gotB) continue; // e.g. a target SKIP_NADIR left out entirely
+    const trueRel = qMul(trueB, qInverse(trueA));
+    const gotRel = qMul(gotB, qInverse(gotA));
+    const trueDir = qRotateVec(trueRel, CAM_FORWARD_LOCAL);
+    const gotDir = qRotateVec(gotRel, CAM_FORWARD_LOCAL);
+    const err = angularSeparation(trueDir, gotDir);
+    sumSq += err * err;
+    n++;
+    if (err > maxErr) {
+      maxErr = err;
+      worstPair = [a, b];
+    }
+  }
+  return {
+    meanDeg: n > 0 ? (Math.sqrt(sumSq / n) * 180) / Math.PI : 0,
+    maxDeg: (maxErr * 180) / Math.PI,
+    worstPair,
+    pairCount: n,
+  };
 }
 
 function renderShotJpeg(scene: ScenePoint[], quat: Quat, cam: CameraModel): Promise<Buffer> {
@@ -146,7 +260,21 @@ async function waitForStitchResult(sessionId: string): Promise<StitchProgressEve
 
 async function main() {
   const rand = mulberry32(42);
-  const scene = buildScene(rand, 250);
+  // 250 was too sparse: at patchFov≈30° a 128px alignment patch only sees
+  // ~5 of 250 points scattered across the whole sphere on average — too few
+  // for phase correlation to reliably find the true peak, confirmed by a
+  // direct diagnostic (estimateRotationCorrection given two zero-noise,
+  // genuinely-overlapping patches from the 250-point scene returned a
+  // confidently WRONG ~13° correction for several real candidate pairs;
+  // raising the count to 2000 made every one of them correctly resolve to
+  // <0.05°, with nothing else changed). This isn't a pipeline bug — real
+  // photos have far denser, continuous texture than isolated dots — but it
+  // means 250 was silently making this bench's own baseline meaningless.
+  const scene = buildScene(rand, 2000);
+  if (SYNTH_PERIODIC) {
+    addPeriodicBand(scene);
+    console.log('SYNTH_PERIODIC=1: added a repetitive "ceiling plank" band near the zenith.');
+  }
 
   const hFov = (HFOV_DEG * Math.PI) / 180;
   const vFov = (VFOV_DEG * Math.PI) / 180;
@@ -166,13 +294,29 @@ async function main() {
 
   const skipNadir = process.env.SKIP_NADIR === '1';
   const targetsToShoot = skipNadir ? plan.targets.filter((t) => t.id !== 'nadir') : plan.targets;
+
+  // Deterministically pick which shots get the large SYNTH_OUTLIER_DEG error
+  // instead of the normal GYRO_NOISE_DEG — spread evenly across the session
+  // rather than clustered, so they land in different real overlap regions.
+  const outlierIds = new Set<string>();
+  if (SYNTH_OUTLIER_SHOTS > 0) {
+    const stride = Math.max(1, Math.floor(targetsToShoot.length / SYNTH_OUTLIER_SHOTS));
+    for (let i = 0, picked = 0; i < targetsToShoot.length && picked < SYNTH_OUTLIER_SHOTS; i += stride, picked++) {
+      outlierIds.add(targetsToShoot[i].id);
+    }
+    console.log(`SYNTH_OUTLIER_SHOTS=${SYNTH_OUTLIER_SHOTS}: injecting ${SYNTH_OUTLIER_DEG}° error into [${[...outlierIds].join(', ')}].`);
+  }
+
   console.log(`Rendering + uploading ${targetsToShoot.length} synthetic shots${skipNadir ? ' (nadir skipped)' : ''}...`);
+  const trueQuats = new Map<string, Quat>();
   for (const target of targetsToShoot) {
     const trueQuat = quatLookingAt(target.yaw, target.pitch, 0);
+    trueQuats.set(target.id, trueQuat);
+    const noiseDeg = outlierIds.has(target.id) ? SYNTH_OUTLIER_DEG : GYRO_NOISE_DEG;
     const noiseVec = {
-      x: ((rand() - 0.5) * 2 * GYRO_NOISE_DEG * Math.PI) / 180,
-      y: ((rand() - 0.5) * 2 * GYRO_NOISE_DEG * Math.PI) / 180,
-      z: ((rand() - 0.5) * 2 * GYRO_NOISE_DEG * Math.PI) / 180,
+      x: ((rand() - 0.5) * 2 * noiseDeg * Math.PI) / 180,
+      y: ((rand() - 0.5) * 2 * noiseDeg * Math.PI) / 180,
+      z: ((rand() - 0.5) * 2 * noiseDeg * Math.PI) / 180,
     };
     const noisyQuat = qNormalize(qMul(qFromAxisAngleVec(noiseVec), trueQuat));
 
@@ -191,12 +335,25 @@ async function main() {
   }
 
   const result = finalEvent.result;
+  const finalQuats = new Map(result.poses.map((p) => [p.targetId, p.quat]));
+  const rel = relativeError(plan, trueQuats, finalQuats, effHFov, effVFov);
+
   console.log('\n=== Result ===');
   console.log(`Output: ${SERVER_URL}${result.outputFile}`);
   console.log(`Size: ${result.width}x${result.height}`);
-  console.log(`Mean residual: ${result.meanResidualPx.toFixed(3)} px`);
+  // NOT a valid before/after metric for anything that makes the pipeline
+  // more *selective* about which pairs to trust (e.g. periodicity-aware
+  // confidence) — it's averaged only over accepted pairs, so rejecting more
+  // of them lowers this number mechanically even when accuracy improves.
+  // Use meanRelativeErrorDeg below for that instead.
+  console.log(`Mean residual (accepted pairs only — NOT a general accuracy metric, see comment): ${result.meanResidualPx.toFixed(3)} px`);
   const bundleCount = result.poses.filter((p) => p.source === 'bundle').length;
   console.log(`Poses refined by bundle adjustment: ${bundleCount}/${result.poses.length}`);
+  console.log(
+    `Relative pose error over ${rel.pairCount} overlapping pairs: mean ${rel.meanDeg.toFixed(3)}°, max ${rel.maxDeg.toFixed(3)}°` +
+      (rel.worstPair ? ` (worst: ${rel.worstPair[0]} <-> ${rel.worstPair[1]})` : ''),
+  );
+  console.log('  ^ this is the metric that actually predicts ghosting — two overlapping shots disagreeing about their relative pose.');
 }
 
 main().catch((err) => {

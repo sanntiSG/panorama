@@ -6,10 +6,11 @@ import {
   qToAxisAngleVec,
   qToMat3,
   vecLength,
+  type Mat3,
   type Quat,
   type Vec3,
 } from '@panorama/shared';
-import { IDENTITY_MAT3, NEGATIVE_IDENTITY_MAT3, addResidualBlock, choleskySolve } from './linalg.js';
+import { IDENTITY_MAT3, addResidualBlock, choleskySolve } from './linalg.js';
 
 export interface PairMeasurement {
   a: string;
@@ -112,14 +113,32 @@ export function runBundleAdjustment(
       const residual = qToAxisAngleVec(qMul(R0, qInverse(pm.relMeasured)));
       const weight = Math.min(pm.confidence, MAX_PAIR_WEIGHT) * huberWeight(vecLength(residual));
 
-      const Jb = qToMat3(qInverse(R0));
+      // Residual r = log(R0 * M^-1) with R0 = quatB * quatA^-1, under this
+      // loop's left-multiplicative tangent-space perturbations (quat' =
+      // exp(eta) * quat, see the update step below). To first order:
+      //   dr/d(eta_b) = I
+      //   dr/d(eta_a) = -R0   (R0 acting as its 3x3 rotation matrix)
+      // This was previously swapped (Identity-ish for A, qToMat3(R0^-1) for
+      // B), which happens to be a fair approximation when R0 itself is
+      // small (most adjacent-shot pairs: qToMat3(R0^-1) ~= I there too) but
+      // is badly wrong for pairs whose relative pose is far from identity —
+      // structurally the case for near-pole ring pairs, where it caused the
+      // solver to diverge (confirmed via finite-difference comparison and
+      // by the exponential residual blowup this produced, worst at exactly
+      // 180 deg where qToMat3(R0^-1) flips sign relative to the true I).
+      const R0Mat = qToMat3(R0);
+      const Ja: Mat3 = [
+        -R0Mat[0], -R0Mat[1], -R0Mat[2],
+        -R0Mat[3], -R0Mat[4], -R0Mat[5],
+        -R0Mat[6], -R0Mat[7], -R0Mat[8],
+      ];
       addResidualBlock(
         H,
         g,
         totalParams,
         [
-          { index: ia, J: NEGATIVE_IDENTITY_MAT3 },
-          { index: ib, J: Jb },
+          { index: ia, J: Ja },
+          { index: ib, J: IDENTITY_MAT3 },
         ],
         residual,
         weight,
