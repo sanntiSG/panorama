@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fillUncoveredPoleCap } from './render.js';
+import { fillUncoveredPoleCap, trustFromAcceptedPairs, MIN_TRUST } from './render.js';
 
 const WIDTH = 32;
 const HEIGHT = 20;
@@ -75,5 +75,24 @@ describe('fillUncoveredPoleCap', () => {
     fillUncoveredPoleCap(data, weightSum, WIDTH, HEIGHT, 'top');
     fillUncoveredPoleCap(data, weightSum, WIDTH, HEIGHT, 'bottom');
     expect(data).toEqual(before);
+  });
+});
+
+describe('trustFromAcceptedPairs', () => {
+  it('never goes below MIN_TRUST, even with zero supporting pairs', () => {
+    expect(trustFromAcceptedPairs(0)).toBe(MIN_TRUST);
+  });
+
+  it('reaches full trust at 2+ accepted pairs', () => {
+    expect(trustFromAcceptedPairs(2)).toBe(1);
+    expect(trustFromAcceptedPairs(5)).toBe(1);
+  });
+
+  it('ramps continuously in between, not all-or-nothing', () => {
+    const zero = trustFromAcceptedPairs(0);
+    const one = trustFromAcceptedPairs(1);
+    const two = trustFromAcceptedPairs(2);
+    expect(one).toBeGreaterThan(zero);
+    expect(one).toBeLessThan(two);
   });
 });

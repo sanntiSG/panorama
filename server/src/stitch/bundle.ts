@@ -24,6 +24,8 @@ export interface BundleResult {
   quats: Map<string, Quat>;
   meanResidualRad: number;
   usedPairs: number;
+  /** How many accepted (confidence-passing) pairs touch each shot — 0 for a shot with no reliable pairwise measurement at all. Drives render.ts's per-shot trust weighting. */
+  acceptedPairs: Map<string, number>;
 }
 
 /**
@@ -100,6 +102,12 @@ export function runBundleAdjustment(
       return { ...m, relMeasured };
     });
 
+  const acceptedPairs = new Map<string, number>(shotIds.map((id) => [id, 0]));
+  for (const pm of accepted) {
+    acceptedPairs.set(pm.a, (acceptedPairs.get(pm.a) ?? 0) + 1);
+    acceptedPairs.set(pm.b, (acceptedPairs.get(pm.b) ?? 0) + 1);
+  }
+
   for (let iter = 0; iter < ITERATIONS; iter++) {
     const H = new Float64Array(totalParams * totalParams);
     const g = new Float64Array(totalParams);
@@ -164,5 +172,6 @@ export function runBundleAdjustment(
     quats: current,
     meanResidualRad: computeMeanResidualRad(shotIds, current, accepted),
     usedPairs: accepted.length,
+    acceptedPairs,
   };
 }

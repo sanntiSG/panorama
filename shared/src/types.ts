@@ -57,6 +57,10 @@ export interface RefinedPose {
   quat: Quat;
   /** How this pose was determined, for diagnostics/UI. */
   source: 'bundle' | 'phase-fallback' | 'prior-only';
+  /** How many accepted pairwise measurements support this pose (bundle.ts's acceptedPairs) — 0 for 'prior-only'. */
+  acceptedPairs: number;
+  /** The render weight this pose's shot actually got (render.ts's RenderShotInput.trust), for diagnostics/UI. */
+  trust: number;
 }
 
 export interface StitchResult {
@@ -67,6 +71,8 @@ export interface StitchResult {
   poses: RefinedPose[];
   /** Mean reprojection residual (px) over inlier correspondences, post bundle-adjustment. */
   meanResidualPx: number;
+  /** Fraction of output pixels with no contributing shot at all (before the pole-cap smear fills it in) — a direct signal of genuine geometric coverage gaps, as opposed to a rendering/blending issue. */
+  uncoveredFraction: number;
 }
 
 /** Server-sent-event payload shape for /api/sessions/:id/stitch progress. */

@@ -155,4 +155,23 @@ describe('runBundleAdjustment converges on a synthetic problem with known ground
       expect(qAngleBetween(result.quats.get(id)!, initialQuats.get(id)!)).toBeLessThan(1e-6);
     }
   });
+
+  it('reports how many accepted pairs support each shot, for render.ts trust weighting', () => {
+    const shots = buildRing(4);
+    const shotIds = shots.map((s) => s.id);
+    const initialQuats = new Map(shots.map((s) => [s.id, s.trueQuat]));
+
+    // ring_0-ring_1 accepted; ring_1-ring_2 rejected for low confidence;
+    // ring_3 has no measurement at all.
+    const pairMeasurements: PairMeasurement[] = [
+      { a: 'ring_0', b: 'ring_1', correctionVec: { x: 0, y: 0, z: 0 }, confidence: 20 },
+      { a: 'ring_1', b: 'ring_2', correctionVec: { x: 0, y: 0, z: 0 }, confidence: 1 },
+    ];
+
+    const result = runBundleAdjustment(shotIds, initialQuats, pairMeasurements);
+    expect(result.acceptedPairs.get('ring_0')).toBe(1);
+    expect(result.acceptedPairs.get('ring_1')).toBe(1); // only the accepted pair counts, not the rejected one
+    expect(result.acceptedPairs.get('ring_2')).toBe(0);
+    expect(result.acceptedPairs.get('ring_3')).toBe(0);
+  });
 });

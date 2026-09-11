@@ -15,6 +15,9 @@ export function ResultScreen({ result, onReset }: ResultScreenProps) {
 
       <div className="pointer-events-none absolute left-2 top-2 z-20 rounded bg-black/60 px-3 py-1.5 text-xs text-neutral-300">
         {result.width}×{result.height} · focal {result.focalPx.toFixed(0)}px · residual {result.meanResidualPx.toFixed(2)}px
+        {result.uncoveredFraction > 0.001 && (
+          <> · <span className="text-amber-400">{(result.uncoveredFraction * 100).toFixed(1)}% sin cobertura</span></>
+        )}
       </div>
 
       <div className="absolute bottom-4 left-0 right-0 z-20 flex items-center justify-center gap-3">

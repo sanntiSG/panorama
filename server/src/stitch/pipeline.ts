@@ -9,7 +9,7 @@ import { findCandidatePairs } from './pairs.js';
 import { estimateRotationCorrection, patchOrientationForPair, samplePatch, type AlignImage } from './align.js';
 import { runBundleAdjustment, MIN_PAIR_CONFIDENCE, type PairMeasurement } from './bundle.js';
 import { computeExposureGains, type ExposurePairSample } from './exposure.js';
-import { renderEquirectangular, type RenderShotInput } from './render.js';
+import { renderEquirectangular, trustFromAcceptedPairs, type RenderShotInput } from './render.js';
 import { injectGPanoXmp } from './xmp.js';
 
 // A safe default that comfortably fits in memory on an ordinary dev
@@ -86,13 +86,6 @@ export async function runStitch(session: SessionManifest): Promise<void> {
     message: `Ajuste geométrico: ${bundleResult.usedPairs} pares usados, residual ${residualDeg.toFixed(2)}°`,
   });
 
-  const refinedShotIds = new Set<string>();
-  for (const pm of pairMeasurements) {
-    if (pm.confidence < MIN_PAIR_CONFIDENCE) continue;
-    refinedShotIds.add(pm.a);
-    refinedShotIds.add(pm.b);
-  }
-
   // Exposure: resample a small overlap patch per accepted pair using the
   // *final* (bundle-adjusted) poses, so the brightness comparison lines up
   // with where the content actually overlaps post-refinement.
@@ -129,6 +122,7 @@ export async function runStitch(session: SessionManifest): Promise<void> {
     quat: bundleResult.quats.get(s.targetId) ?? s.quat,
     cam: s.cam,
     exposureGain: exposureGains.get(s.targetId) ?? 1,
+    trust: trustFromAcceptedPairs(bundleResult.acceptedPairs.get(s.targetId) ?? 0),
   }));
 
   const rendered = await renderEquirectangular(renderInputs, OUTPUT_WIDTH, OUTPUT_HEIGHT, (fraction) => {
@@ -147,11 +141,16 @@ export async function runStitch(session: SessionManifest): Promise<void> {
   await fs.mkdir(path.dirname(outFile), { recursive: true });
   await fs.writeFile(outFile, withXmp);
 
-  const poses: RefinedPose[] = shotIds.map((targetId) => ({
-    targetId,
-    quat: bundleResult.quats.get(targetId) ?? initialQuats.get(targetId)!,
-    source: refinedShotIds.has(targetId) ? 'bundle' : 'prior-only',
-  }));
+  const poses: RefinedPose[] = shotIds.map((targetId) => {
+    const acceptedPairs = bundleResult.acceptedPairs.get(targetId) ?? 0;
+    return {
+      targetId,
+      quat: bundleResult.quats.get(targetId) ?? initialQuats.get(targetId)!,
+      source: acceptedPairs > 0 ? 'bundle' : 'prior-only',
+      acceptedPairs,
+      trust: trustFromAcceptedPairs(acceptedPairs),
+    };
+  });
 
   const result: StitchResult = {
     outputFile: `/api/output/${id}.jpg`,
@@ -163,6 +162,7 @@ export async function runStitch(session: SessionManifest): Promise<void> {
     focalPx: referenceCam.focalPx,
     poses,
     meanResidualPx: bundleResult.meanResidualRad * referenceCam.focalPx,
+    uncoveredFraction: rendered.uncoveredFraction,
   };
 
   publishProgress(id, { stage: 'done', result });
