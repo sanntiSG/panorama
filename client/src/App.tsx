@@ -19,8 +19,16 @@ import { ResultScreen } from './screens/ResultScreen.js';
 
 type Phase = 'setup' | 'calibrating' | 'capturing' | 'finishing' | 'stitching' | 'result' | 'error';
 
-/** Fractional overlap between adjacent shots the capture plan targets. See shared/plan/capturePlan.ts. */
-const OVERLAP = 0.35;
+/**
+ * Fractional overlap between adjacent shots the capture plan targets. See
+ * shared/plan/capturePlan.ts. Lowered from 0.35 — fewer, less redundant
+ * shots per session — paired with the stricter per-shot lock precision
+ * added alongside this (see targeting.ts's LOCK_MAINTAIN_ANGULAR_THRESHOLD_RAD):
+ * doing this without first tightening precision would have left less
+ * redundancy for the stitcher to fall back on against exactly the kind of
+ * per-shot pose error that was causing ghosting.
+ */
+const OVERLAP = 0.25;
 
 function orientationErrorMessage(reason: PermissionFailureReason | undefined): string {
   switch (reason) {

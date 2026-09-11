@@ -32,7 +32,7 @@ const SERVER_URL = process.env.SERVER_URL ?? 'http://localhost:3001';
 const SHOT_SIZE = 480;
 const HFOV_DEG = 55;
 const VFOV_DEG = 70;
-const OVERLAP = 0.35;
+const OVERLAP = 0.25; // kept in sync with client/src/App.tsx's OVERLAP
 const GYRO_NOISE_DEG = process.env.GYRO_NOISE_DEG ? Number(process.env.GYRO_NOISE_DEG) : 2.5; // per the plan's own estimate of realistic gyro error
 
 function mulberry32(seed: number) {

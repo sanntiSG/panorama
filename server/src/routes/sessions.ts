@@ -7,7 +7,9 @@ import { shotsDir } from '../paths.js';
 import { publishProgress, subscribeProgress } from '../stitch/progress.js';
 import { runStitch } from '../stitch/pipeline.js';
 
-const DEFAULT_OVERLAP = 0.35;
+// Fallback only — the client always sends its own `overlap` explicitly (see
+// client/src/App.tsx's OVERLAP), kept in sync with it for any caller that doesn't.
+const DEFAULT_OVERLAP = 0.25;
 
 export async function sessionRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/sessions', async (request) => {

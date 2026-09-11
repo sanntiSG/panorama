@@ -6,7 +6,7 @@ import type { CameraModel } from '../math/camera.js';
 
 const HFOV = (49 * Math.PI) / 180;
 const VFOV = (63 * Math.PI) / 180;
-const OVERLAP = 0.35;
+const OVERLAP = 0.25; // kept in sync with client/src/App.tsx's OVERLAP
 
 /** Deterministic PRNG (mulberry32) so the 100k-sample coverage test is reproducible. */
 function mulberry32(seed: number) {
