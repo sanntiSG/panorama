@@ -88,8 +88,82 @@ export function fft2d(re: Float64Array, im: Float64Array, size: number, invert: 
 export interface PhaseCorrelationResult {
   dx: number;
   dy: number;
-  /** Peak-to-sidelobe-ratio-like confidence: (peak - mean) / stddev of the correlation surface. Higher is better. */
+  /**
+   * Peak-to-sidelobe-ratio-like confidence: (peak - mean) / stddev of the
+   * correlation surface, discounted by `ambiguityDiscount` when a second,
+   * competing peak (e.g. from repetitive texture like ceiling beams) is
+   * nearly as strong as the main one. Higher is better.
+   */
   confidence: number;
+  /**
+   * Diagnostic only (not used downstream yet beyond `confidence` itself):
+   * the second-strongest peak's own peak-to-sidelobe ratio, as a fraction
+   * of the main peak's — near 1 means the match was ambiguous.
+   */
+  ambiguityRatio: number;
+}
+
+/**
+ * Radius (in patch pixels, at the reference PATCH_SIZE=128 this pipeline
+ * actually uses — align.ts's PATCH_SIZE) excluded around the main
+ * correlation peak when searching for a competing one. Not an arbitrary
+ * guess: a peak this close is just the true match blurred by ordinary
+ * residual pose noise, not a genuinely different peak. At this patch size
+ * and this pipeline's typical ~30deg patch FOV (~4.3 px/deg — see
+ * align.ts's `patchFov`), the few-degree pose noise this pipeline already
+ * tolerates elsewhere (e.g. bundle.ts's HUBER_DELTA_RAD=8deg, align.test.ts's
+ * few-degree tolerances) blurs the peak by roughly this many pixels.
+ */
+const SECOND_PEAK_EXCLUSION_PX_AT_128 = 4;
+/** Below this second-peak/main-peak ratio, treat the match as unambiguous — no discount. */
+const AMBIGUITY_RATIO_SAFE = 0.5;
+/** At or above this ratio, apply the maximum discount — the two peaks are close enough to call the match ambiguous (e.g. repetitive texture). */
+const AMBIGUITY_RATIO_BAD = 0.9;
+/** Floor multiplier at maximum ambiguity — never zero: an ambiguous match still carries *some* signal, just much less than an unambiguous one. */
+const AMBIGUITY_MIN_DISCOUNT = 0.15;
+
+/**
+ * Highest correlation-surface value at least `exclusionRadiusPx` (toroidal
+ * distance — the surface wraps, like the FFT domain it came from) from
+ * (bestX, bestY): the strongest *competing* peak, if any.
+ */
+export function findSecondPeak(
+  surface: Float64Array,
+  size: number,
+  bestX: number,
+  bestY: number,
+  exclusionRadiusPx: number,
+): number {
+  const exclSq = exclusionRadiusPx * exclusionRadiusPx;
+  let secondVal = -Infinity;
+  for (let y = 0; y < size; y++) {
+    const dy = Math.min(Math.abs(y - bestY), size - Math.abs(y - bestY));
+    for (let x = 0; x < size; x++) {
+      const dx = Math.min(Math.abs(x - bestX), size - Math.abs(x - bestX));
+      if (dx * dx + dy * dy <= exclSq) continue;
+      const v = surface[y * size + x];
+      if (v > secondVal) secondVal = v;
+    }
+  }
+  return secondVal;
+}
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Multiplicative confidence discount from how close the strongest competing
+ * peak is to the main one, both expressed in the same peak-to-noise-floor
+ * units as `confidence` (so the comparison is meaningful across different
+ * patches/scenes, not just raw correlation magnitude).
+ */
+export function ambiguityDiscount(mainConfidence: number, secondConfidence: number): number {
+  if (mainConfidence <= 0) return 1; // already worthless on its own merits; don't double-penalize
+  const ratio = secondConfidence / mainConfidence;
+  const t = smoothstep(AMBIGUITY_RATIO_SAFE, AMBIGUITY_RATIO_BAD, ratio);
+  return 1 - t * (1 - AMBIGUITY_MIN_DISCOUNT);
 }
 
 function hann(i: number, n: number): number {
@@ -151,10 +225,17 @@ export function phaseCorrelate(a: Float32Array, b: Float32Array, size: number): 
   }
   const mean = sum / n;
   const variance = Math.max(1e-12, sumSq / n - mean * mean);
-  const confidence = (bestVal - mean) / Math.sqrt(variance);
+  const stddev = Math.sqrt(variance);
+  const rawConfidence = (bestVal - mean) / stddev;
 
   const py = Math.floor(bestIdx / size);
   const px = bestIdx % size;
+
+  const exclusionRadiusPx = Math.max(2, Math.round((SECOND_PEAK_EXCLUSION_PX_AT_128 * size) / 128));
+  const secondVal = findSecondPeak(crossRe, size, px, py, exclusionRadiusPx);
+  const secondConfidence = (secondVal - mean) / stddev;
+  const ambiguityRatio = rawConfidence > 0 ? secondConfidence / rawConfidence : 1;
+  const confidence = rawConfidence * ambiguityDiscount(rawConfidence, secondConfidence);
 
   const left = crossRe[py * size + ((px - 1 + size) % size)];
   const right = crossRe[py * size + ((px + 1) % size)];
@@ -174,5 +255,5 @@ export function phaseCorrelate(a: Float32Array, b: Float32Array, size: number): 
   // theorem: negate here so the returned (dx,dy) directly matches the
   // documented convention b(x,y)=a(x-dx,y-dy) — confirmed empirically in
   // fft.test.ts against known synthetic shifts, not just by this derivation.
-  return { dx: -rawDx, dy: -rawDy, confidence };
+  return { dx: -rawDx, dy: -rawDy, confidence, ambiguityRatio };
 }

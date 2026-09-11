@@ -32,6 +32,8 @@ export interface PairAlignment {
   /** World-frame small-rotation correction for `b`, i.e. improvedQuatB = correction ∘ b.quat, holding `a` fixed. */
   correctionVec: Vec3;
   confidence: number;
+  /** Diagnostic passthrough from phaseCorrelate: near 1 means a competing peak (e.g. repetitive texture) made the match ambiguous — confidence above already reflects this, this is just for debugging/labeling. */
+  ambiguityRatio: number;
 }
 
 function bilinearSample(data: Float32Array, w: number, h: number, x: number, y: number): number {
@@ -124,7 +126,7 @@ export function estimateRotationCorrection(a: AlignImage, b: AlignImage, patchFo
   const patchA = samplePatch(a, patchOrientation, patchCam, PATCH_SIZE);
   const patchB = samplePatch(b, patchOrientation, patchCam, PATCH_SIZE);
 
-  const { dx, dy, confidence: rawConfidence } = phaseCorrelate(patchA.data, patchB.data, PATCH_SIZE);
+  const { dx, dy, confidence: rawConfidence, ambiguityRatio } = phaseCorrelate(patchA.data, patchB.data, PATCH_SIZE);
   // Confirmed convention (fft.test.ts): patchB(x,y) = patchA(x-dx, y-dy).
   // See align.test.ts for the full derivation this implements: the tangent-
   // plane shift (dx,dy) maps to a world-frame small-rotation axis-angle
@@ -146,5 +148,5 @@ export function estimateRotationCorrection(a: AlignImage, b: AlignImage, patchFo
   // by running tools/synth.ts end-to-end, not by algebra.
   const confidence = rawConfidence * patchA.validFraction * patchB.validFraction;
 
-  return { a: a.targetId, b: b.targetId, correctionVec, confidence };
+  return { a: a.targetId, b: b.targetId, correctionVec, confidence, ambiguityRatio };
 }
