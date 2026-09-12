@@ -11,6 +11,32 @@ interface WakeLockSentinelLike {
   release: () => Promise<void>;
 }
 
+/**
+ * This app is portrait-only end to end — the calibration sweep, the
+ * reticle, and cameraCalibration.ts's DEFAULT_FOV_DEG all assume "sensor's
+ * short axis becomes horizontal". But `MediaStreamTrack.getSettings()` on
+ * iOS Safari reports the stream's landscape/sensor-native resolution (here,
+ * confirmed against a real session: {width:4032, height:3024}) regardless
+ * of how the phone is actually held — while the frame `captureFrame()`
+ * actually saves (via `video.videoWidth`/`videoHeight`, which the browser
+ * *does* rotate for display) comes out portrait, 3024x4032, the opposite
+ * way round. Every shot in that session's manifest confirmed this exactly:
+ * width and height swapped from what the CameraModel believed.
+ *
+ * That swap silently swaps hFov/vFov everywhere a CameraModel built from it
+ * gets used — shared/plan/capturePlan.ts's ring spacing, and
+ * viewport.ts's computeCoverTransform (which maps the reticle canvas onto
+ * the live video using this same width/height as the source aspect ratio,
+ * so a swapped aspect ratio also throws off where the reticle appears
+ * relative to what's actually on screen). Enforcing the portrait invariant
+ * directly here — rather than trying to pick the "correct" one of
+ * getSettings()/videoWidth per-browser — fixes it regardless of *why* a
+ * given browser's numbers disagree.
+ */
+function normalizeToPortrait(width: number, height: number): CameraInfo {
+  return width > height ? { width: height, height: width } : { width, height };
+}
+
 // The Image Capture API's focus/exposure/white-balance constraints aren't in
 // TypeScript's lib.dom.d.ts (a separate spec from core DOM) — minimal local
 // extensions of the standard shapes, just for the fields we touch.
@@ -105,15 +131,17 @@ export function useCamera() {
         // muted+playsInline so this shouldn't normally happen.
       });
     }
-    // getSettings() below is the normal source of the camera's resolution;
-    // this is only a fallback for the rare case it doesn't report
-    // dimensions, so the app doesn't get stuck waiting on info.width > 0.
+    // getSettings() in start() below is the normal source of the camera's
+    // resolution; this is only a fallback for the rare case it doesn't
+    // report dimensions, so the app doesn't get stuck waiting on
+    // info.width > 0. Always normalized to portrait — see
+    // normalizeToPortrait's doc comment.
     if (el.videoWidth > 0) {
-      setInfo((prev) => (prev && prev.width > 0 ? prev : { width: el.videoWidth, height: el.videoHeight }));
+      setInfo((prev) => (prev && prev.width > 0 ? prev : normalizeToPortrait(el.videoWidth, el.videoHeight)));
     } else {
       el.addEventListener(
         'loadedmetadata',
-        () => setInfo((prev) => (prev && prev.width > 0 ? prev : { width: el.videoWidth, height: el.videoHeight })),
+        () => setInfo((prev) => (prev && prev.width > 0 ? prev : normalizeToPortrait(el.videoWidth, el.videoHeight))),
         { once: true },
       );
     }
@@ -138,10 +166,12 @@ export function useCamera() {
       }
       const track = stream.getVideoTracks()[0];
       const settings = track?.getSettings();
-      setInfo({
-        width: settings?.width ?? videoRef.current?.videoWidth ?? 0,
-        height: settings?.height ?? videoRef.current?.videoHeight ?? 0,
-      });
+      setInfo(
+        normalizeToPortrait(
+          settings?.width ?? videoRef.current?.videoWidth ?? 0,
+          settings?.height ?? videoRef.current?.videoHeight ?? 0,
+        ),
+      );
       setStatus('ready');
       await acquireWakeLock();
     } catch (err) {

@@ -235,6 +235,12 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
             locking: primary.state === 'locking',
             progress,
             gateHint,
+            targetYaw: primary.target.yaw,
+            targetPitch: primary.target.pitch,
+            quat,
+            cam,
+            transform,
+            showCard: primary.target.kind !== 'zenith' && primary.target.kind !== 'nadir',
           });
         } else {
           // Falls back to "turn right" only in the vanishingly rare case the

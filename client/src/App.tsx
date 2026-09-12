@@ -21,12 +21,24 @@ type Phase = 'setup' | 'calibrating' | 'capturing' | 'finishing' | 'stitching' |
 
 /**
  * Fractional overlap between adjacent shots the capture plan targets. See
- * shared/plan/capturePlan.ts. Lowered from 0.35 — fewer, less redundant
- * shots per session — paired with the stricter per-shot lock precision
- * added alongside this (see targeting.ts's LOCK_MAINTAIN_ANGULAR_THRESHOLD_RAD):
- * doing this without first tightening precision would have left less
- * redundancy for the stitcher to fall back on against exactly the kind of
- * per-shot pose error that was causing ghosting.
+ * shared/plan/capturePlan.ts. Lowered from 0.35 to 0.25 in an earlier round,
+ * paired with the stricter per-shot lock precision added alongside it (see
+ * targeting.ts's LOCK_MAINTAIN_ANGULAR_THRESHOLD_RAD).
+ *
+ * Left at 0.25 here — a real session was found to run 44 shots against a
+ * reference app's ~25-27 for a comparable FOV, but the actual cause turned
+ * out to be a separate, much bigger bug: useCamera.ts's CameraModel had
+ * width/height swapped from the phone's true portrait orientation (see
+ * normalizeToPortrait's doc comment there), which was silently feeding this
+ * plan a vertical FOV of ~38° instead of the real ~63° — a plan that thinks
+ * it needs to cover much more vertical ground than it actually does
+ * generates far more rings than necessary. With that fixed, this exact
+ * overlap value already produces ~26 shots at a typical phone's FOV — right
+ * in the reference's range — with no further change needed here. (Tried
+ * lowering this to 0.15 first, before finding the real cause — it broke
+ * shared/plan/capturePlan.test.ts's geometric coverage guarantee outright,
+ * which is a good sign the shot count was never actually an overlap
+ * problem.)
  */
 const OVERLAP = 0.25;
 

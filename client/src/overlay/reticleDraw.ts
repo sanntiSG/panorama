@@ -195,10 +195,71 @@ export interface PrimaryReticleOptions {
   progress: number;
   /** Shown instead of the degrees-remaining label when locking but gated (e.g. "Nivela el teléfono", "Mantén quieto"). */
   gateHint: string | null;
+  /** World-frame yaw/pitch of the target itself (not just its already-projected screen point) — needed to project the card's own corners independently. See drawWorldCard. */
+  targetYaw: number;
+  targetPitch: number;
+  quat: Quat;
+  cam: CameraModel;
+  transform: CoverTransform;
+  /** False for zenith/nadir — the reference's own concentric-ring style for pole targets, not the rectangular card, since a card's "which way is up" cue stops meaning anything pointed straight up/down. */
+  showCard: boolean;
 }
 
 const PRIMARY_MIN_RADIUS = 26;
 const PRIMARY_MAX_RADIUS = 50;
+
+/** Angular half-extents of the world-anchored card — a portrait rectangle (taller than wide), matching a reference app's own target shape (confirmed by direct frame-by-frame review: it visibly skews/rotates in perspective as you approach off-axis, straightening to upright right at lock — a flat card anchored at the target's own orientation, not a flat screen-space shape). Not derivable to pixel precision from screenshots alone — a reasonable starting size, easy to retune after seeing it live in the simulator. */
+const CARD_HALF_WIDTH_RAD = (8 * Math.PI) / 180;
+const CARD_HALF_HEIGHT_RAD = (11 * Math.PI) / 180;
+
+/**
+ * The card's 4 corners as world directions, in yaw/pitch offsets around the
+ * target — the same small-angle-box simplification drawWorldGrid already
+ * uses for its own world-anchored lines above (pure yaw/pitch steps, no
+ * tangent-plane correction), not a new approximation.
+ */
+function cardCornerDirs(targetYaw: number, targetPitch: number): Vec3[] {
+  return [
+    directionFromYawPitch(targetYaw - CARD_HALF_WIDTH_RAD, targetPitch + CARD_HALF_HEIGHT_RAD),
+    directionFromYawPitch(targetYaw + CARD_HALF_WIDTH_RAD, targetPitch + CARD_HALF_HEIGHT_RAD),
+    directionFromYawPitch(targetYaw + CARD_HALF_WIDTH_RAD, targetPitch - CARD_HALF_HEIGHT_RAD),
+    directionFromYawPitch(targetYaw - CARD_HALF_WIDTH_RAD, targetPitch - CARD_HALF_HEIGHT_RAD),
+  ];
+}
+
+/**
+ * Fills a flat card anchored in world space at the target's own orientation
+ * (not a flat screen-space shape) — its on-screen corners naturally show
+ * perspective skew/rotation the further off-axis the camera is, which is
+ * exactly the "how do I need to tilt the phone" cue a reference app's own
+ * target card gives (confirmed by direct comparison: its card visibly
+ * straightens from a skewed parallelogram to an upright rectangle as you
+ * approach correct alignment). Returns false (drawing nothing) if any
+ * corner falls outside the pinhole projection's valid range — e.g. a target
+ * near the edge of the frame — so the caller can fall back to a plainer
+ * shape rather than draw a corrupted quad.
+ */
+function fillWorldCard(
+  ctx: CanvasRenderingContext2D,
+  targetYaw: number,
+  targetPitch: number,
+  quat: Quat,
+  cam: CameraModel,
+  transform: CoverTransform,
+  fillStyle: string,
+): boolean {
+  const projected = cardCornerDirs(targetYaw, targetPitch).map((dir) => worldDirToScreen(dir, quat, cam));
+  if (projected.some((p) => !p.visible)) return false;
+  const points = projected.map((p) => applyCoverTransform(p.x, p.y, transform));
+
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+  ctx.closePath();
+  ctx.fillStyle = fillStyle;
+  ctx.fill();
+  return true;
+}
 
 /**
  * The single target the user should be aiming at, rendered large and with
@@ -206,11 +267,25 @@ const PRIMARY_MAX_RADIUS = 50;
  * an identical faint ring with no explanation for why it wasn't firing.
  */
 export function drawPrimaryReticle(ctx: CanvasRenderingContext2D, x: number, y: number, opts: PrimaryReticleOptions) {
-  const { angularErrorRad, locking, progress, gateHint } = opts;
+  const { angularErrorRad, locking, progress, gateHint, targetYaw, targetPitch, quat, cam, transform, showCard } = opts;
   const span = APPROACH_ANGULAR_THRESHOLD_RAD - LOCK_ANGULAR_THRESHOLD_RAD;
   const t = span > 0 ? Math.max(0, Math.min(1, (angularErrorRad - LOCK_ANGULAR_THRESHOLD_RAD) / span)) : 0;
   const radius = PRIMARY_MIN_RADIUS + (PRIMARY_MAX_RADIUS - PRIMARY_MIN_RADIUS) * t;
   const color = locking ? '#30d158' : angularErrorRad < APPROACH_ANGULAR_THRESHOLD_RAD ? '#f5a623' : '#ffffff';
+
+  const cardDrawn = showCard && fillWorldCard(ctx, targetYaw, targetPitch, quat, cam, transform, color);
+  if (cardDrawn) {
+    // Punch a transparent hole where the ring/hole sits so the live video
+    // shows through it exactly like the reference's own card — this canvas
+    // is an overlay directly on top of the <video>, so erasing back to
+    // transparent here reveals the live feed underneath, not a color.
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
 
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, Math.PI * 2);
