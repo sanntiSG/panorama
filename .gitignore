@@ -22,3 +22,6 @@ coverage/
 
 # personal test captures (real-device session outputs, not project artifacts)
 results/
+
+# reference-app screenshot sequence used for a one-off UX comparison (1.2GB, not project source)
+example/

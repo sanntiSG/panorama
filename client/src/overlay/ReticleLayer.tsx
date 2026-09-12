@@ -29,6 +29,8 @@ const HOLD_MS = 300;
 const LOCK_GRACE_MS = 120;
 /** Padding outside the visible frame within which a projected point still counts as "on screen" — matches the pinhole projection's own slight overshoot near the edges. */
 const OFFSCREEN_MARGIN_PX = 60;
+/** Duration (ms) of the full-screen white flash on capture — a deliberately blunt "it fired" confirmation, since previously the only sign a shot was taken was the small counter incrementing, easy to miss. */
+const FLASH_MS = 140;
 
 interface LockProgress {
   targetId: string;
@@ -64,6 +66,7 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
   const lockRef = useRef<LockProgress | null>(null);
   const firedCooldownRef = useRef<Set<string>>(new Set());
   const primaryIdRef = useRef<string | null>(null);
+  const flashStartRef = useRef<number | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -203,6 +206,15 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
             if (!rollOk) gateHint = 'Nivela el teléfono';
             else if (!stable) gateHint = 'Mantén quieto';
             else if (!steady) gateHint = 'Sigue quieto…';
+          } else if (primary.state === 'approaching' && (primary.target.kind === 'zenith' || primary.target.kind === 'nadir')) {
+            // Zenith/nadir shots are the ones a hand holding the phone
+            // physically struggles to frame — straight up or down puts your
+            // own arm/body at the edge of shot, which invites exactly the
+            // kind of wobble that produced the ghosting this whole precision
+            // effort targets. Said early (while still approaching, not only
+            // once already trying to hold the lock) so there's time to act
+            // on it before the hold actually starts.
+            gateHint = 'Estirá el brazo y date un paso atrás';
           }
           drawPrimaryReticle(ctx, sx, sy, {
             angularErrorRad: primary.angularErrorRad,
@@ -231,6 +243,7 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
         if (canLock && steady && progress >= 1 && lockRef.current) {
           firedCooldownRef.current.add(primary.target.id);
           lockRef.current = null;
+          flashStartRef.current = now;
           onLockFire(primary.target, quat);
         }
       } else {
@@ -239,6 +252,18 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
 
       // --- roll (artificial horizon) indicator ---
       drawRollIndicator(ctx, w, h, roll, rollOk);
+
+      // --- capture flash (drawn last, over everything) ---
+      if (flashStartRef.current !== null) {
+        const elapsed = now - flashStartRef.current;
+        if (elapsed >= FLASH_MS) {
+          flashStartRef.current = null;
+        } else {
+          const alpha = 1 - elapsed / FLASH_MS;
+          ctx.fillStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
+          ctx.fillRect(0, 0, w, h);
+        }
+      }
     }
 
     raf = requestAnimationFrame(draw);

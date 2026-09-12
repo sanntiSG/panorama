@@ -11,6 +11,57 @@ interface WakeLockSentinelLike {
   release: () => Promise<void>;
 }
 
+// The Image Capture API's focus/exposure/white-balance constraints aren't in
+// TypeScript's lib.dom.d.ts (a separate spec from core DOM) — minimal local
+// extensions of the standard shapes, just for the fields we touch.
+interface ExtendedMediaTrackCapabilities extends MediaTrackCapabilities {
+  focusMode?: string[];
+  exposureMode?: string[];
+  whiteBalanceMode?: string[];
+}
+interface ExtendedMediaTrackConstraintSet extends MediaTrackConstraintSet {
+  focusMode?: string;
+  exposureMode?: string;
+  whiteBalanceMode?: string;
+}
+
+/**
+ * Best-effort: locks focus/exposure/white-balance to whatever the camera has
+ * auto-settled on, instead of leaving them free to keep hunting/drifting as
+ * the phone sweeps across a room mid-session. Sweeping from a bright window
+ * to a dark corner (or a ceiling with a different light color temperature)
+ * can otherwise re-trigger autofocus or reflow exposure/white-balance
+ * between shots — server-side per-image exposure gain (stitch/exposure.ts)
+ * can correct a uniform brightness offset after the fact, but it can't fix a
+ * frame that came out genuinely soft from a mid-session refocus, or a
+ * white-balance shift.
+ *
+ * Setting each mode to 'manual' *without* also specifying a target value is
+ * the standard technique to freeze whatever value auto mode had just
+ * settled on — deliberately not trying to compute/guess a number ourselves.
+ * Support varies a lot by browser (solid on Chrome/Android via the Image
+ * Capture API, much more limited on Safari/iOS) — this is a silent no-op,
+ * not a failure, anywhere a capability isn't exposed. Call once the camera
+ * has had a real moment to settle on the actual scene (e.g. after the
+ * calibration sweep), not immediately on stream start.
+ */
+async function lockAutoAdjustments(track: MediaStreamTrack | undefined): Promise<void> {
+  if (!track) return;
+  try {
+    const capabilities = track.getCapabilities?.() as ExtendedMediaTrackCapabilities | undefined;
+    if (!capabilities) return;
+    const advanced: ExtendedMediaTrackConstraintSet[] = [];
+    if (capabilities.focusMode?.includes('manual')) advanced.push({ focusMode: 'manual' });
+    if (capabilities.exposureMode?.includes('manual')) advanced.push({ exposureMode: 'manual' });
+    if (capabilities.whiteBalanceMode?.includes('manual')) advanced.push({ whiteBalanceMode: 'manual' });
+    if (advanced.length === 0) return;
+    await track.applyConstraints({ advanced });
+  } catch {
+    // Not fatal — same best-effort posture as acquireWakeLock below; an
+    // unsupported or rejected constraint just leaves auto-adjustment on.
+  }
+}
+
 /**
  * Owns the rear-camera MediaStream and (best-effort) the screen wake lock so
  * the display doesn't sleep mid-capture. `videoRef` must be attached to a
@@ -112,6 +163,11 @@ export function useCamera() {
     setStatus('idle');
   }, []);
 
+  /** See lockAutoAdjustments' doc comment — call once the camera has had a real moment to settle on the actual scene (e.g. right as the calibration sweep finishes), not immediately on stream start. */
+  const lockAutoAdjustmentsNow = useCallback(async () => {
+    await lockAutoAdjustments(streamRef.current?.getVideoTracks()[0]);
+  }, []);
+
   useEffect(() => () => stop(), [stop]);
 
   // iOS releases the wake lock when the tab is backgrounded; re-acquire on return.
@@ -125,5 +181,5 @@ export function useCamera() {
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [status, acquireWakeLock]);
 
-  return { videoRef, attachVideo, start, stop, status, error, info };
+  return { videoRef, attachVideo, start, stop, status, error, info, lockAutoAdjustmentsNow };
 }

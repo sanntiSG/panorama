@@ -267,7 +267,15 @@ export default function App() {
     setPhase('setup');
   }, [camera.stop]);
 
-  const handleCalibrationComplete = useCallback(() => setPhase('capturing'), []);
+  // Lock focus/exposure/white-balance right as calibration ends: the sweep
+  // the user just did (to build the camera model) also gave auto-focus/
+  // -exposure/-white-balance real scene content to settle on, so this is
+  // the natural moment to freeze them before the shots where consistency
+  // actually matters. Best-effort — see useCamera's lockAutoAdjustments.
+  const handleCalibrationComplete = useCallback(() => {
+    void camera.lockAutoAdjustmentsNow();
+    setPhase('capturing');
+  }, [camera.lockAutoAdjustmentsNow]);
 
   useEffect(() => () => uploadQueueRef.current?.dispose(), []);
 
