@@ -239,7 +239,15 @@ export function drawPrimaryReticle(ctx: CanvasRenderingContext2D, x: number, y: 
 
   const labelY = y + radius + 24;
   if (gateHint) {
+    // Gate problems (roll/stability/steadiness) are more urgent than the
+    // plain "you're holding" state below — always take priority.
     label(ctx, gateHint, x, labelY, { size: 12, color: '#ffd60a' });
+  } else if (progress > 0) {
+    // Matches the reference app directly: the instant the hold ring starts
+    // filling (no gate blocking it), it shows the word "HOLD" the whole
+    // time it fills, not a degrees countdown — confirmed frame-by-frame,
+    // this is its default/only state during an active hold, not occasional.
+    label(ctx, 'HOLD', x, labelY, { size: 13, color: '#30d158' });
   } else {
     const deg = Math.round((angularErrorRad * 180) / Math.PI);
     label(ctx, `${deg}°`, x, labelY, { size: 12, color: 'rgba(255,255,255,0.85)' });

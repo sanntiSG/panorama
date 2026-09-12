@@ -23,8 +23,22 @@ import {
   drawWorldGrid,
 } from './reticleDraw.js';
 
-/** Steady time (ms, only while `steady` — see below) required before a shot fires. Slightly up from the previous 250ms: now that progress only accumulates while genuinely still, a bit more of it is worth demanding. */
-const HOLD_MS = 300;
+/**
+ * Steady time (ms, only while `steady` — see below) required before a shot
+ * fires. Raised from 300ms after directly measuring a reference app's own
+ * hold: reading every consecutive frame (no gaps) of two independent hold
+ * sequences in its screen-recording, the "HOLD" ring stayed up for 18 and
+ * 26 frames respectively before firing, against its own capture flash
+ * lasting only 2-3 frames — and we already calibrated our own flash to
+ * 140ms (FLASH_MS below) to feel comparably snappy. Applying that same
+ * ~8-10x ratio to our flash duration lands the reference's hold at roughly
+ * 1-1.3s, not the ~300-550ms we had. (Confirmed separately, frame-by-frame
+ * diffing: the video during that hold is genuinely live — small but
+ * nonzero frame-to-frame change consistent with natural hand tremor — not
+ * a frozen/paused frame, so this is "demand more real elapsed stillness",
+ * not "freeze the picture".)
+ */
+const HOLD_MS = 1200;
 /** How long a lock-in-progress survives the gate (roll/stability/etc.) failing for a single frame before resetting — a lone dropped `isStable` sample shouldn't cost the whole hold. Firing itself still requires the gate to hold on the actual frame progress reaches 1 (see the `canLock` check below), so this only smooths out the *hold*, never the fire decision. */
 const LOCK_GRACE_MS = 120;
 /** Padding outside the visible frame within which a projected point still counts as "on screen" — matches the pinhole projection's own slight overshoot near the edges. */
