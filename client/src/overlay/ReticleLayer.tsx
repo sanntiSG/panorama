@@ -17,6 +17,7 @@ import {
   drawCenterMark,
   drawEdgeArrow,
   drawLeaderLine,
+  drawPostCaptureHint,
   drawPrimaryReticle,
   drawRollIndicator,
   drawSecondaryDot,
@@ -45,6 +46,17 @@ const LOCK_GRACE_MS = 120;
 const OFFSCREEN_MARGIN_PX = 60;
 /** Duration (ms) of the full-screen white flash on capture — a deliberately blunt "it fired" confirmation, since previously the only sign a shot was taken was the small counter incrementing, easy to miss. */
 const FLASH_MS = 140;
+/**
+ * How long, after a shot fires, to pause before hunting for the next target
+ * resumes — no new hold accumulates and the reticle shows a plain "Listo ✓"
+ * confirmation instead. Doesn't affect the sharpness of the shot just taken
+ * (that's already fully determined by the HOLD_MS that preceded it, not
+ * something a pause afterward can change retroactively) — this is about
+ * giving the user a clear beat before the next approach starts, instead of
+ * the reticle immediately chasing the next point while their pulse is still
+ * settling from the shot that just fired.
+ */
+const POST_CAPTURE_MS = 1000;
 
 interface LockProgress {
   targetId: string;
@@ -81,6 +93,7 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
   const firedCooldownRef = useRef<Set<string>>(new Set());
   const primaryIdRef = useRef<string | null>(null);
   const flashStartRef = useRef<number | null>(null);
+  const postCaptureUntilRef = useRef<number | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -162,8 +175,45 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
 
       drawCenterMark(ctx, w, h);
 
-      // --- lock/fire timing + the primary reticle or edge arrow ---
-      if (primary) {
+      const inPostCapture = postCaptureUntilRef.current !== null && now < postCaptureUntilRef.current;
+      if (inPostCapture) {
+        // No hold accumulates and nothing fires during this window — just
+        // the confirmation hint, in place of the normal hunt-for-the-next-
+        // target UI. See POST_CAPTURE_MS's doc comment. Falls through to
+        // the roll indicator and (fading) capture flash below unchanged.
+        lockRef.current = null;
+        drawPostCaptureHint(ctx, w, h, (postCaptureUntilRef.current! - now) / POST_CAPTURE_MS);
+      } else {
+        postCaptureUntilRef.current = null;
+        drawPrimaryOrEdge();
+      }
+
+      // --- roll (artificial horizon) indicator ---
+      drawRollIndicator(ctx, w, h, roll, rollOk);
+
+      // --- capture flash (drawn last, over everything) ---
+      if (flashStartRef.current !== null) {
+        const elapsed = now - flashStartRef.current;
+        if (elapsed >= FLASH_MS) {
+          flashStartRef.current = null;
+        } else {
+          const alpha = 1 - elapsed / FLASH_MS;
+          ctx.fillStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
+          ctx.fillRect(0, 0, w, h);
+        }
+      }
+
+      /** The lock/fire timing + primary reticle or edge-arrow drawing, pulled into its own nested function only so the post-capture-freeze branch above can skip it cleanly without duplicating the roll-indicator/flash tail that follows either way — declared inside draw() (recreated each frame, like the several other per-frame closures/objects already here) specifically so it closes over draw()'s own locals (w, h, primary, quat, etc.) directly instead of threading eight parameters through. */
+      function drawPrimaryOrEdge() {
+        // TS doesn't carry the non-null narrowing of `quat`/`primary` from
+        // draw()'s own scope into this nested function's closure — redundant
+        // at runtime (draw() already returned early if quat was null, and
+        // this whole function is a no-op without a primary target), but
+        // needed so the calls below can rely on their non-null types.
+        if (!quat || !primary) {
+          lockRef.current = null;
+          return;
+        }
         const gateOk = rollOk && stable;
         const canLock =
           primary.state === 'locking' && gateOk && !suspendedRef.current && !firedCooldownRef.current.has(primary.target.id);
@@ -172,7 +222,7 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
         // the pose recorded when it fires is trustworthy, not just "was
         // somewhere in the 6° cone at some point during the hold".
         const steady = primary.angularErrorRad <= LOCK_MAINTAIN_ANGULAR_THRESHOLD_RAD;
-
+  
         if (canLock) {
           if (lockRef.current?.targetId !== primary.target.id) {
             lockRef.current = { targetId: primary.target.id, accumulatedMs: 0, lastGoodAt: now, lastTickAt: now };
@@ -197,10 +247,10 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
         } else {
           lockRef.current = null;
         }
-
+  
         const progress =
           lockRef.current?.targetId === primary.target.id ? Math.min(1, lockRef.current.accumulatedMs / HOLD_MS) : 0;
-
+  
         let onScreen = false;
         let sx = 0;
         let sy = 0;
@@ -212,7 +262,7 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
             sy = pt.y;
           }
         }
-
+  
         if (onScreen) {
           drawLeaderLine(ctx, w, h, sx, sy);
           let gateHint: string | null = null;
@@ -255,7 +305,7 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
             label: describeDirection(dir),
           });
         }
-
+  
         // Only ever fire on a frame where the gate is genuinely satisfied
         // *and* the aim is currently steady — the grace period above lets
         // brief gate hiccups keep the hold's progress, but must never let a
@@ -264,24 +314,8 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
           firedCooldownRef.current.add(primary.target.id);
           lockRef.current = null;
           flashStartRef.current = now;
+          postCaptureUntilRef.current = now + POST_CAPTURE_MS;
           onLockFire(primary.target, quat);
-        }
-      } else {
-        lockRef.current = null;
-      }
-
-      // --- roll (artificial horizon) indicator ---
-      drawRollIndicator(ctx, w, h, roll, rollOk);
-
-      // --- capture flash (drawn last, over everything) ---
-      if (flashStartRef.current !== null) {
-        const elapsed = now - flashStartRef.current;
-        if (elapsed >= FLASH_MS) {
-          flashStartRef.current = null;
-        } else {
-          const alpha = 1 - elapsed / FLASH_MS;
-          ctx.fillStyle = `rgba(255,255,255,${alpha.toFixed(3)})`;
-          ctx.fillRect(0, 0, w, h);
         }
       }
     }

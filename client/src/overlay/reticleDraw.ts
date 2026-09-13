@@ -329,6 +329,22 @@ export function drawPrimaryReticle(ctx: CanvasRenderingContext2D, x: number, y: 
   }
 }
 
+/**
+ * Shown for a short window right after a shot fires, in place of the normal
+ * hunt-for-the-next-target UI — a deliberate pause so the user gets a clear
+ * "it fired, you can relax now" before the reticle immediately starts
+ * chasing the next point while their pulse is still settling from the last
+ * one. Doesn't retroactively change the sharpness of the shot just taken
+ * (that's already decided by the hold that preceded it) — this is about the
+ * transition to the *next* one starting from a calmer baseline.
+ */
+export function drawPostCaptureHint(ctx: CanvasRenderingContext2D, w: number, h: number, remainingFrac: number) {
+  const cx = w / 2;
+  const cy = h / 2 + 90; // just below the center mark, out of its way
+  const alpha = Math.min(1, remainingFrac * 4); // quick fade in, lingers, no fade-out needed since it's cleared outright when the window ends
+  label(ctx, 'Listo ✓', cx, cy, { size: 15, color: `rgba(48,209,88,${alpha.toFixed(3)})` });
+}
+
 export interface EdgeArrowOptions {
   distanceDeg: number;
   /** 0..1, caller-driven pulse phase (e.g. from `(sin(now/280)+1)/2`) — a static arrow is easy to miss in a busy scene. */

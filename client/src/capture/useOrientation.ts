@@ -203,9 +203,14 @@ export function useOrientation(options: UseOrientationOptions = {}): Orientation
       const raw = rawQuatRef.current;
       if (!raw) return;
 
+      // How close the camera is currently pointing to straight up/down —
+      // needed below for both the compass gate and the smoother's rate
+      // input, so compute it once regardless of whether compass correction
+      // is even available this session.
+      const forward = qRotateVec(raw, CAM_FORWARD);
+      const horiz = Math.hypot(forward.x, forward.y);
+
       if (useCompassRef.current && compassHeadingRef.current != null) {
-        const forward = qRotateVec(raw, CAM_FORWARD);
-        const horiz = Math.hypot(forward.x, forward.y);
         // Skip near the poles (see COMPASS_MIN_HORIZONTAL) — freeze the
         // offset rather than estimate it from numerically meaningless
         // components; it resumes converging the moment the camera comes
@@ -220,8 +225,27 @@ export function useOrientation(options: UseOrientationOptions = {}): Orientation
       }
       const target = yawOffsetRef.current !== 0 ? applyYawOffset(raw, yawOffsetRef.current) : raw;
 
+      // Same reasoning as the compass gate right above, applied to the
+      // smoother instead: heading/yaw estimation from the raw sensor is
+      // numerically unstable near the poles (a physical limitation of the
+      // magnetometer+accelerometer fusion, not something our own math can
+      // fix), which can read as a large frame-to-frame rotation of the raw
+      // quaternion even while the phone is held physically still. The
+      // smoother's adaptive damping (smoothing.ts) trusts `rateRef.current`
+      // to mean "the phone is actually moving this fast" and *loosens*
+      // damping in response — exactly backwards right where the signal is
+      // noisiest. Taper the rate it sees down toward 0 as `horiz` shrinks,
+      // so heavy damping applies near a pole regardless of what the raw
+      // (noise-inflated) rate suggests; away from the pole this is 1 and
+      // changes nothing. This doesn't loosen LOCK_MAINTAIN_ANGULAR_THRESHOLD_RAD
+      // or any other precision requirement — it only makes the input signal
+      // itself steadier, so that existing requirement is easier to satisfy
+      // honestly near a pole instead of fighting sensor noise to get there.
+      const poleDamping = Math.min(1, horiz / COMPASS_MIN_HORIZONTAL);
+      const smoothedRate = rateRef.current * poleDamping;
+
       if (!smootherRef.current) smootherRef.current = createQuatSmoother();
-      quatRef.current = smootherRef.current.step(target, dtMs, rateRef.current);
+      quatRef.current = smootherRef.current.step(target, dtMs, smoothedRate);
 
       if (now - lastPublishAtRef.current >= SAMPLE_PUBLISH_MS) {
         lastPublishAtRef.current = now;
