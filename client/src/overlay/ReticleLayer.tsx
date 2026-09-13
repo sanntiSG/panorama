@@ -173,8 +173,6 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
         drawSecondaryDot(ctx, x, y, p.angularErrorRad);
       }
 
-      drawCenterMark(ctx, w, h);
-
       const inPostCapture = postCaptureUntilRef.current !== null && now < postCaptureUntilRef.current;
       if (inPostCapture) {
         // No hold accumulates and nothing fires during this window — just
@@ -187,6 +185,14 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
         postCaptureUntilRef.current = null;
         drawPrimaryOrEdge();
       }
+
+      // Drawn *after* the primary reticle, not before: the card's fill (and
+      // especially its destination-out hole punch, which erases whatever
+      // was already on the canvas in that circle) would otherwise cover or
+      // outright erase the crosshair exactly when it overlaps it — i.e.
+      // exactly when you're nearly aligned and most need to see it, which a
+      // real session confirmed was happening.
+      drawCenterMark(ctx, w, h);
 
       // --- roll (artificial horizon) indicator ---
       drawRollIndicator(ctx, w, h, roll, rollOk);

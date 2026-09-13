@@ -26,6 +26,26 @@ const OUTPUT_HEIGHT = OUTPUT_WIDTH / 2;
 /** Small patch for exposure sampling — only needs a mean, not FFT resolution. */
 const EXPOSURE_PATCH_SIZE = 64;
 
+/**
+ * The nadir shot's own pixels never make it into the final render — deliberate,
+ * not a bug. This system has no position tracking, only orientation, so
+ * "straight down" always means straight down from wherever the phone
+ * physically is *right now*; stepping back while still pointing the phone
+ * down doesn't create any separation from your own feet (confirmed on a
+ * real device: the target can't stay "fixed on the floor" the way it can
+ * for every other direction, since that would need to know where the user
+ * is standing, not just which way the phone points). The nadir shot is
+ * still captured and still feeds the pairwise alignment / bundle adjustment
+ * below (it can still help refine its ring neighbors' poses), it's only
+ * excluded from `renderInputs` — so that region always falls back to
+ * fillUncoveredPoleCap's existing blur-from-the-nearest-ring fill instead
+ * of whatever the nadir shot actually contained. Matches standard practice
+ * in professional 360 tours (a soft blur or logo at nadir, not the
+ * photographer's own feet) rather than chasing a capture that's not
+ * achievable with orientation-only tracking.
+ */
+const EXCLUDED_FROM_RENDER = new Set(['nadir']);
+
 export async function runStitch(session: SessionManifest): Promise<void> {
   const { id, shots } = session;
 
@@ -116,14 +136,16 @@ export async function runStitch(session: SessionManifest): Promise<void> {
   const exposureGains = computeExposureGains(shotIds, exposureSamples);
   publishProgress(id, { stage: 'exposure', progress: 1, message: 'Exposición compensada entre fotos' });
 
-  const renderInputs: RenderShotInput[] = shots.map((s) => ({
-    targetId: s.targetId,
-    filePath: path.join(shotsDir(id), s.fileName),
-    quat: bundleResult.quats.get(s.targetId) ?? s.quat,
-    cam: s.cam,
-    exposureGain: exposureGains.get(s.targetId) ?? 1,
-    trust: trustFromAcceptedPairs(bundleResult.acceptedPairs.get(s.targetId) ?? 0),
-  }));
+  const renderInputs: RenderShotInput[] = shots
+    .filter((s) => !EXCLUDED_FROM_RENDER.has(s.targetId))
+    .map((s) => ({
+      targetId: s.targetId,
+      filePath: path.join(shotsDir(id), s.fileName),
+      quat: bundleResult.quats.get(s.targetId) ?? s.quat,
+      cam: s.cam,
+      exposureGain: exposureGains.get(s.targetId) ?? 1,
+      trust: trustFromAcceptedPairs(bundleResult.acceptedPairs.get(s.targetId) ?? 0),
+    }));
 
   const rendered = await renderEquirectangular(renderInputs, OUTPUT_WIDTH, OUTPUT_HEIGHT, (fraction) => {
     publishProgress(id, { stage: 'render', progress: fraction, message: `Generando la esfera (${Math.round(fraction * 100)}%)` });
