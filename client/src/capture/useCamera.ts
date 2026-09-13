@@ -44,12 +44,28 @@ interface ExtendedMediaTrackCapabilities extends MediaTrackCapabilities {
   focusMode?: string[];
   exposureMode?: string[];
   whiteBalanceMode?: string[];
+  exposureTime?: { min: number; max: number; step?: number };
 }
 interface ExtendedMediaTrackConstraintSet extends MediaTrackConstraintSet {
   focusMode?: string;
   exposureMode?: string;
   whiteBalanceMode?: string;
+  exposureTime?: number;
 }
+
+/**
+ * How far from the fastest (min) end of the camera's supported exposureTime
+ * range to bias toward, once we're taking manual control of it anyway —
+ * 0 would be the fastest possible shutter (darkest, noisiest), 1 the
+ * slowest (brightest, most motion-blur-prone, and what a dim-room auto
+ * exposure would tend to pick on its own). A quarter of the way from
+ * fastest to slowest is a deliberately conservative bias toward "less
+ * motion blur" over "brighter image" — not the extreme, since a badly
+ * underexposed shot is its own problem. Not something that can be tuned
+ * without a real device to look at actual results on, so treat this as a
+ * starting point, not a carefully-measured constant.
+ */
+const EXPOSURE_TIME_FAST_BIAS = 0.25;
 
 /**
  * Best-effort: locks focus/exposure/white-balance to whatever the camera has
@@ -62,9 +78,17 @@ interface ExtendedMediaTrackConstraintSet extends MediaTrackConstraintSet {
  * frame that came out genuinely soft from a mid-session refocus, or a
  * white-balance shift.
  *
- * Setting each mode to 'manual' *without* also specifying a target value is
- * the standard technique to freeze whatever value auto mode had just
- * settled on — deliberately not trying to compute/guess a number ourselves.
+ * Setting focus/white-balance mode to 'manual' *without* also specifying a
+ * target value is the standard technique to freeze whatever value auto mode
+ * had just settled on — deliberately not trying to compute/guess a number
+ * ourselves. Exposure is the one exception: alongside 'manual' it also
+ * requests a specific exposureTime biased toward the fast end of the
+ * camera's supported range where that capability exists (see
+ * EXPOSURE_TIME_FAST_BIAS) — freezing whatever auto had chosen isn't enough
+ * there, since in a dim room that could just as well be a slow shutter that
+ * bakes hand-tremor blur into every single frame regardless of how steady
+ * the orientation reading looks.
+ *
  * Support varies a lot by browser (solid on Chrome/Android via the Image
  * Capture API, much more limited on Safari/iOS) — this is a silent no-op,
  * not a failure, anywhere a capability isn't exposed. Call once the camera
@@ -78,7 +102,17 @@ async function lockAutoAdjustments(track: MediaStreamTrack | undefined): Promise
     if (!capabilities) return;
     const advanced: ExtendedMediaTrackConstraintSet[] = [];
     if (capabilities.focusMode?.includes('manual')) advanced.push({ focusMode: 'manual' });
-    if (capabilities.exposureMode?.includes('manual')) advanced.push({ exposureMode: 'manual' });
+    if (capabilities.exposureMode?.includes('manual')) {
+      const range = capabilities.exposureTime;
+      if (range && Number.isFinite(range.min) && Number.isFinite(range.max) && range.max > range.min) {
+        // Bias toward a faster shutter instead of just freezing whatever
+        // auto picked — see EXPOSURE_TIME_FAST_BIAS's doc comment.
+        const target = range.min + (range.max - range.min) * EXPOSURE_TIME_FAST_BIAS;
+        advanced.push({ exposureMode: 'manual', exposureTime: target });
+      } else {
+        advanced.push({ exposureMode: 'manual' });
+      }
+    }
     if (capabilities.whiteBalanceMode?.includes('manual')) advanced.push({ whiteBalanceMode: 'manual' });
     if (advanced.length === 0) return;
     await track.applyConstraints({ advanced });
@@ -156,6 +190,16 @@ export function useCamera() {
           facingMode: { ideal: 'environment' },
           width: { ideal: 4032 },
           height: { ideal: 3024 },
+          // A low-light auto-negotiated frame rate typically comes paired
+          // with a longer per-frame exposure (more light, more risk of hand
+          // tremor blurring *within* a single captured frame — a different
+          // problem than orientation steadiness, which this constraint
+          // alone can't fix; see lockAutoAdjustments' exposureTime bias
+          // below for the other half of this). Nudging toward 30fps pushes
+          // the browser toward a faster shutter from the start. A plain,
+          // widely-supported MediaTrackConstraint (unlike exposureTime),
+          // and `ideal` degrades gracefully wherever 30fps isn't achievable.
+          frameRate: { ideal: 30 },
         },
         audio: false,
       });
