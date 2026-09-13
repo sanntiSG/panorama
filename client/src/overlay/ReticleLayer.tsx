@@ -56,7 +56,7 @@ const FLASH_MS = 140;
  * the reticle immediately chasing the next point while their pulse is still
  * settling from the shot that just fired.
  */
-const POST_CAPTURE_MS = 1000;
+const POST_CAPTURE_MS = 1400;
 
 interface LockProgress {
   targetId: string;
@@ -270,15 +270,22 @@ export function ReticleLayer({ plan, cam, quatRef, isStableRef, capturedIds, onL
             if (!rollOk) gateHint = 'Nivela el teléfono';
             else if (!stable) gateHint = 'Mantén quieto';
             else if (!steady) gateHint = 'Sigue quieto…';
-          } else if (primary.state === 'approaching' && (primary.target.kind === 'zenith' || primary.target.kind === 'nadir')) {
-            // Zenith/nadir shots are the ones a hand holding the phone
-            // physically struggles to frame — straight up or down puts your
-            // own arm/body at the edge of shot, which invites exactly the
-            // kind of wobble that produced the ghosting this whole precision
-            // effort targets. Said early (while still approaching, not only
-            // once already trying to hold the lock) so there's time to act
-            // on it before the hold actually starts.
+          } else if (primary.state === 'approaching' && primary.target.kind === 'zenith') {
+            // Stepping back genuinely clears your body from a straight-up
+            // shot — the ceiling point you're capturing is no longer
+            // directly above where you're standing. Said early (while still
+            // approaching, not only once already trying to hold the lock)
+            // so there's time to act on it before the hold actually starts.
             gateHint = 'Estirá el brazo y date un paso atrás';
+          } else if (primary.state === 'approaching' && primary.target.kind === 'nadir') {
+            // Stepping back does NOT work here, unlike zenith: this system
+            // has no position tracking, only orientation — "straight down"
+            // always means straight down from wherever the phone physically
+            // is *right now*, which after a step back is still essentially
+            // where your feet are standing. The only thing that actually
+            // moves the camera away from your own feet is holding it out to
+            // the side while still pointing it straight down.
+            gateHint = 'Extendé el brazo lejos de tus pies';
           }
           drawPrimaryReticle(ctx, sx, sy, {
             angularErrorRad: primary.angularErrorRad,

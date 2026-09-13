@@ -140,13 +140,21 @@ export function drawWorldGrid(
   }
 }
 
-/** Fixed crosshair at the exact center of the screen — the "where am I pointing right now" reference that was missing entirely before this. */
+/**
+ * Fixed crosshair at the exact center of the screen — the "where am I
+ * pointing right now" reference that was missing entirely before this.
+ * Cyan specifically because it's not used anywhere else in this overlay
+ * (the primary reticle's own states are green/amber/white) — it needs to
+ * stay readable right when it matters most, overlapping the reticle's own
+ * hole once you're nearly aligned, where a white-on-white crosshair used to
+ * blend in and become hard to tell apart from it.
+ */
 export function drawCenterMark(ctx: CanvasRenderingContext2D, w: number, h: number) {
   const cx = w / 2;
   const cy = h / 2;
   const r = 9;
-  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = 'rgba(10,220,255,0.9)';
+  ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.arc(cx, cy, r, 0, Math.PI * 2);
   ctx.stroke();
