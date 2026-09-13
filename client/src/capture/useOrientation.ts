@@ -68,10 +68,26 @@ export interface OrientationSource {
 
 // How much of a session's worth of "which way is north" drift the compass
 // correction should have visibly fixed after this many milliseconds —
-// deliberately slow (a few seconds) so short-term compass noise (indoors,
-// near metal, near the car) doesn't make the reticles wander; alpha itself
-// only drifts a few degrees per minute, so this doesn't need to be fast.
+// deliberately slow (a few seconds) so short-term compass noise doesn't
+// make the reticles wander *quickly*. Confirmed on a real device (screen
+// recording with the debug HUD on, near a fridge) that "slow" alone isn't
+// enough on its own: webkitCompassHeading held a bad reading (magnetic
+// interference — a very real scenario in a kitchen, not a rare edge case)
+// while the phone sat physically still (raw alpha/beta barely moved,
+// jerk near 0), and this filter dutifully chased it anyway — heading
+// dragged ~70deg over ~2s. Slow just means it takes longer to get there,
+// not that it doesn't. See COMPASS_MAX_TRUSTED_ERR_RAD below, which is
+// what actually stops that: alpha itself only drifts a few degrees per
+// minute, so a *genuine* correction is never this large at once.
 const COMPASS_TAU_MS = 3000;
+// A single frame's compass-vs-current-estimate disagreement this large is
+// far more likely to be an unreliable reading (magnetic interference) than
+// real drift — see COMPASS_TAU_MS's comment. Reject folding it in rather
+// than let the slow filter patiently chase a bad target; it naturally
+// resumes correcting the moment readings become sane again. The session's
+// very first compass reading is exempt (see compassInitializedRef) since
+// establishing the initial "which way is north" reference isn't drift.
+const COMPASS_MAX_TRUSTED_ERR_RAD = (30 * Math.PI) / 180;
 // Below this horizontal component of the forward vector (~sin 17.5°), the
 // camera is close enough to straight up/down that heading is numerically
 // meaningless (atan2 of two near-zero components) — skip the compass
@@ -124,6 +140,8 @@ export function useOrientation(options: UseOrientationOptions = {}): Orientation
   // --- Derived/output state, written by the rAF loop. ---
   const yawOffsetRef = useRef(0); // accumulated compass yaw correction, radians
   const compassLockedRef = useRef(false);
+  /** Whether the session's very first usable compass reading has been folded in yet — see COMPASS_MAX_TRUSTED_ERR_RAD's doc comment. */
+  const compassInitializedRef = useRef(false);
   const smootherRef = useRef<QuatSmoother | null>(null);
   const lastFrameAtRef = useRef(0);
   const lastPublishAtRef = useRef(0);
@@ -218,9 +236,22 @@ export function useOrientation(options: UseOrientationOptions = {}): Orientation
         if (horiz > COMPASS_MIN_HORIZONTAL) {
           const rawHeading = Math.atan2(forward.x, forward.y);
           const err = wrapAngle(compassHeadingRef.current - (rawHeading + yawOffsetRef.current));
-          const k = 1 - Math.exp(-dtMs / COMPASS_TAU_MS);
-          yawOffsetRef.current = wrapAngle(yawOffsetRef.current + err * k);
-          compassLockedRef.current = true;
+          if (!compassInitializedRef.current) {
+            // Establishing the initial "which way is north" reference is
+            // normal startup, not drift — accept it in full however large,
+            // same as the smoother's own snap-on-first-sample behavior.
+            yawOffsetRef.current = wrapAngle(yawOffsetRef.current + err);
+            compassInitializedRef.current = true;
+            compassLockedRef.current = true;
+          } else if (Math.abs(err) < COMPASS_MAX_TRUSTED_ERR_RAD) {
+            const k = 1 - Math.exp(-dtMs / COMPASS_TAU_MS);
+            yawOffsetRef.current = wrapAngle(yawOffsetRef.current + err * k);
+            compassLockedRef.current = true;
+          }
+          // else: implausible disagreement for an already-initialized
+          // reference — treat this reading as unreliable (see
+          // COMPASS_MAX_TRUSTED_ERR_RAD) and leave yawOffsetRef untouched
+          // this frame, rather than let it chase a bad target.
         }
       }
       const target = yawOffsetRef.current !== 0 ? applyYawOffset(raw, yawOffsetRef.current) : raw;

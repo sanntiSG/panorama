@@ -25,3 +25,6 @@ results/
 
 # reference-app screenshot sequence used for a one-off UX comparison (1.2GB, not project source)
 example/
+
+# real-device debug-HUD screen recording used to diagnose the compass-drift bug, not project source
+problem/
